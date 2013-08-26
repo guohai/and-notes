@@ -1,0 +1,552 @@
+diff --git a/services/surfaceflinger/DisplayDevice.cpp b/services/surfaceflinger/DisplayDevice.cpp
+index 69b9c34..a9b4206 100644
+--- a/services/surfaceflinger/DisplayDevice.cpp
++++ b/services/surfaceflinger/DisplayDevice.cpp
+@@ -136,7 +136,8 @@ void DisplayDevice::init(EGLConfig config)
+     EGLSurface surface;
+     EGLint w, h;
+     EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+-    surface = eglCreateWindowSurface(display, config, window, NULL);
++    surface = eglCreateWindowSurface(display, config, window, NULL); // 这里会干嘛？ 通过EGL创建一个供绘制的Window，
++																	  // 理论上EGL处理完的数据也会压入到这个ANativeWindow所关联的BufferQueue
+     eglQuerySurface(display, surface, EGL_WIDTH,  &mDisplayWidth);
+     eglQuerySurface(display, surface, EGL_HEIGHT, &mDisplayHeight);
+ 
+diff --git a/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp b/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp
+index 6c86a53..f082255 100644
+--- a/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp
++++ b/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp
+@@ -51,7 +51,7 @@ namespace android {
+  */
+ 
+ FramebufferSurface::FramebufferSurface(HWComposer& hwc, int disp) :
+-    ConsumerBase(new BufferQueue(true, new GraphicBufferAlloc())),
++    ConsumerBase(new BufferQueue(true, new GraphicBufferAlloc())), // allow synchronous mode, surfaceflinger/DisplayHardware/GraphicBufferAlloc.h
+     mDisplayType(disp),
+     mCurrentBufferSlot(-1),
+     mCurrentBuffer(0),
+@@ -61,7 +61,7 @@ FramebufferSurface::FramebufferSurface(HWComposer& hwc, int disp) :
+     mBufferQueue->setConsumerName(mName);
+     mBufferQueue->setConsumerUsageBits(GRALLOC_USAGE_HW_FB |
+                                        GRALLOC_USAGE_HW_RENDER |
+-                                       GRALLOC_USAGE_HW_COMPOSER);
++                                       GRALLOC_USAGE_HW_COMPOSER); // 注意这里
+     mBufferQueue->setDefaultBufferFormat(mHwc.getFormat(disp));
+     mBufferQueue->setDefaultBufferSize(mHwc.getWidth(disp),  mHwc.getHeight(disp));
+     mBufferQueue->setSynchronousMode(true);
+@@ -107,10 +107,11 @@ status_t FramebufferSurface::nextBuffer(sp<GraphicBuffer>& outBuffer, sp<Fence>&
+ }
+ 
+ // Overrides ConsumerBase::onFrameAvailable(), does not call base class impl.
+-void FramebufferSurface::onFrameAvailable() {
++void FramebufferSurface::onFrameAvailable() { // 每过来一帧，直接往荧幕上贴
+     sp<GraphicBuffer> buf;
+     sp<Fence> acquireFence;
+-    status_t err = nextBuffer(buf, acquireFence);
++    status_t err = nextBuffer(buf, acquireFence); // 这个buffer是已经通过SF合成好的吗？
++    											  // 已经通过EGL处理过，详见DisplayDevice
+     if (err != NO_ERROR) {
+         ALOGE("error latching nnext FramebufferSurface buffer: %s (%d)",
+                 strerror(-err), err);
+diff --git a/services/surfaceflinger/DisplayHardware/HWComposer.cpp b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
+index 068fdcd..b64e51f 100644
+--- a/services/surfaceflinger/DisplayHardware/HWComposer.cpp
++++ b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
+@@ -74,7 +74,7 @@ struct HWComposer::cb_context {
+         // calling a new callback).
+         void (*zero[4])(void);
+     };
+-    callbacks procs;
++    callbacks procs; // 注册到 hwc_composer_device_1 的 callback 就是这个 hwc_procs_t
+     HWComposer* hwc;
+ };
+ 
+@@ -100,8 +100,8 @@ HWComposer::HWComposer(
+     bool needVSyncThread = true;
+ 
+     // Note: some devices may insist that the FB HAL be opened before HWC.
+-    loadFbHalModule();
+-    loadHwcModule();
++    loadFbHalModule(); // initialize mFbDev
++    loadHwcModule(); // initialize mHwc
+ 
+     if (mFbDev && mHwc && hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
+         // close FB HAL if we don't needed it.
+@@ -129,29 +129,33 @@ HWComposer::HWComposer(
+               (hwcApiVersion(mHwc) >> 16) & 0xff);
+         if (mHwc->registerProcs) {
+             mCBContext->hwc = this;
+-            mCBContext->procs.invalidate = &hook_invalidate;
+-            mCBContext->procs.vsync = &hook_vsync;
++            mCBContext->procs.invalidate = &hook_invalidate; // (*invalidate)() triggers a screen refresh
++            mCBContext->procs.vsync = &hook_vsync; // (*vsync)() is called by the h/w composer HAL when a vsync event is
++            									   // received and HWC_EVENT_VSYNC is enabled on a display
+             if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1))
+-                mCBContext->procs.hotplug = &hook_hotplug;
++                mCBContext->procs.hotplug = &hook_hotplug; // (*hotplug)() is called by the h/w composer HAL when a display is
++														   // connected or disconnected. The PRIMARY display is always connected and
++														   // the hotplug callback should not be called for it.
+             else
+-                mCBContext->procs.hotplug = NULL;
++                mCBContext->procs.hotplug = NULL; // this callback will be NULL if the h/w composer is using HWC_DEVICE_API_VERSION_1_0
+             memset(mCBContext->procs.zero, 0, sizeof(mCBContext->procs.zero));
+-            mHwc->registerProcs(mHwc, &mCBContext->procs);
++            mHwc->registerProcs(mHwc, &mCBContext->procs); // (*registerProcs)() registers callbacks that the h/w composer HAL can
++														   // later use.
+         }
+ 
+         // don't need a vsync thread if we have a hardware composer
+         needVSyncThread = false;
+         // always turn vsync off when we start
+-        eventControl(HWC_DISPLAY_PRIMARY, HWC_EVENT_VSYNC, 0);
++        eventControl(HWC_DISPLAY_PRIMARY, HWC_EVENT_VSYNC, 0); // 定义在 hardware/libhardware/include/hardware/hwcomposer_defs.h
+ 
+         // the number of displays we actually have depends on the
+         // hw composer version
+         if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_2)) {
+             // 1.2 adds support for virtual displays
+-            mNumDisplays = MAX_DISPLAYS;
++            mNumDisplays = MAX_DISPLAYS; // 最多支持 2 个屏幕 + 一个 virtual 屏幕
+         } else if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
+             // 1.1 adds support for multiple displays
+-            mNumDisplays = HWC_NUM_DISPLAY_TYPES;
++            mNumDisplays = HWC_NUM_DISPLAY_TYPES; // 最多支持 2 个屏幕
+         } else {
+             mNumDisplays = 1;
+         }
+@@ -275,18 +279,18 @@ void HWComposer::hook_hotplug(const struct hwc_procs* procs, int disp,
+     ctx->hwc->hotplug(disp, connected);
+ }
+ 
+-void HWComposer::invalidate() {
++void HWComposer::invalidate() { // 重新绘制
+     mFlinger->repaintEverything();
+ }
+ 
+-void HWComposer::vsync(int disp, int64_t timestamp) {
++void HWComposer::vsync(int disp, int64_t timestamp) { // VSYNC 事件
+     ATRACE_INT("VSYNC", ++mVSyncCount&1);
+     mEventHandler.onVSyncReceived(disp, timestamp);
+     Mutex::Autolock _l(mLock);
+     mLastHwVSync = timestamp;
+ }
+ 
+-void HWComposer::hotplug(int disp, int connected) {
++void HWComposer::hotplug(int disp, int connected) { // 荧幕热插拔，通常不会用到
+     if (disp == HWC_DISPLAY_PRIMARY || disp >= HWC_NUM_DISPLAY_TYPES) {
+         ALOGE("hotplug event received for invalid display: disp=%d connected=%d",
+                 disp, connected);
+@@ -296,7 +300,7 @@ void HWComposer::hotplug(int disp, int connected) {
+     mEventHandler.onHotplugReceived(disp, bool(connected));
+ }
+ 
+-static const uint32_t DISPLAY_ATTRIBUTES[] = {
++static const uint32_t DISPLAY_ATTRIBUTES[] = { // 参见hardware/libhardware/include/hardware/hwcomposer.h和hwcomposer_defs.h
+     HWC_DISPLAY_VSYNC_PERIOD,
+     HWC_DISPLAY_WIDTH,
+     HWC_DISPLAY_HEIGHT,
+@@ -433,7 +437,7 @@ bool HWComposer::isConnected(int disp) const {
+     return mDisplayData[disp].connected;
+ }
+ 
+-void HWComposer::eventControl(int disp, int event, int enabled) {
++void HWComposer::eventControl(int disp, int event, int enabled) { // 软/硬开启关闭事件都是通过这里
+     if (uint32_t(disp)>31 || !mAllocatedDisplayIDs.hasBit(disp)) {
+         ALOGD("eventControl ignoring event %d on unallocated disp %d (en=%d)",
+               event, disp, enabled);
+@@ -456,7 +460,7 @@ void HWComposer::eventControl(int disp, int event, int enabled) {
+         const int32_t oldValue = mDisplayData[disp].events & eventBit;
+         if (newValue != oldValue) {
+             ATRACE_CALL();
+-            err = mHwc->eventControl(mHwc, disp, event, enabled);
++            err = mHwc->eventControl(mHwc, disp, event, enabled); // Enables or disables h/w composer events for a display.
+             if (!err) {
+                 int32_t& events(mDisplayData[disp].events);
+                 events = (events & ~eventBit) | newValue;
+@@ -994,7 +998,7 @@ void HWComposer::VSyncThread::setEnabled(bool enabled) {
+ }
+ 
+ void HWComposer::VSyncThread::onFirstRef() {
+-    run("VSyncThread", PRIORITY_URGENT_DISPLAY + PRIORITY_MORE_FAVORABLE);
++    run("VSyncThread", PRIORITY_URGENT_DISPLAY + PRIORITY_MORE_FAVORABLE); // 优先级被拉高
+ }
+ 
+ bool HWComposer::VSyncThread::threadLoop() {
+diff --git a/services/surfaceflinger/DisplayHardware/HWComposer.h b/services/surfaceflinger/DisplayHardware/HWComposer.h
+index 7c67407..2b1fa2f 100644
+--- a/services/surfaceflinger/DisplayHardware/HWComposer.h
++++ b/services/surfaceflinger/DisplayHardware/HWComposer.h
+@@ -34,7 +34,7 @@ extern "C" int clock_nanosleep(clockid_t clock_id, int flags,
+                            const struct timespec *request,
+                            struct timespec *remain);
+ 
+-struct hwc_composer_device_1;
++struct hwc_composer_device_1; // hardware/libhardware/include/hardware/hwcomposer.h
+ struct hwc_display_contents_1;
+ struct hwc_layer_1;
+ struct hwc_procs;
+@@ -243,7 +243,7 @@ public:
+     // this class is only used to fake the VSync event on systems that don't
+     // have it.
+     class VSyncThread : public Thread {
+-        HWComposer& mHwc;
++        HWComposer& mHwc; // 这是软件模拟方式
+         mutable Mutex mLock;
+         Condition mCondition;
+         bool mEnabled;
+@@ -312,7 +312,7 @@ private:
+ 
+     sp<SurfaceFlinger>              mFlinger;
+     framebuffer_device_t*           mFbDev;
+-    struct hwc_composer_device_1*   mHwc;
++    struct hwc_composer_device_1*   mHwc; // 这是硬件方式
+     // invariant: mLists[0] != NULL iff mHwc != NULL
+     // mLists[i>0] can be NULL. that display is to be ignored
+     struct hwc_display_contents_1*  mLists[MAX_DISPLAYS];
+diff --git a/services/surfaceflinger/EventThread.cpp b/services/surfaceflinger/EventThread.cpp
+index edb9fa5..c82f248 100644
+--- a/services/surfaceflinger/EventThread.cpp
++++ b/services/surfaceflinger/EventThread.cpp
+@@ -86,7 +86,7 @@ void EventThread::setVsyncRate(uint32_t count,
+ void EventThread::requestNextVsync(
+         const sp<EventThread::Connection>& connection) {
+     Mutex::Autolock _l(mLock);
+-    if (connection->count < 0) {
++    if (connection->count < 0) { // 如果是大于0就表示continuous，所以这个方法就不需要作用
+         connection->count = 0;
+         mCondition.broadcast();
+     }
+@@ -364,7 +364,7 @@ void EventThread::Connection::setVsyncRate(uint32_t count) {
+ }
+ 
+ void EventThread::Connection::requestNextVsync() {
+-    mEventThread->requestNextVsync(this);
++    mEventThread->requestNextVsync(this); // 如果VsyncRate大于0，这个方法就不起作用
+ }
+ 
+ status_t EventThread::Connection::postEvent(
+diff --git a/services/surfaceflinger/EventThread.h b/services/surfaceflinger/EventThread.h
+index 1934f98..3c92b94 100644
+--- a/services/surfaceflinger/EventThread.h
++++ b/services/surfaceflinger/EventThread.h
+@@ -49,7 +49,7 @@ class EventThread : public Thread {
+         // count >= 1 : continuous event. count is the vsync rate
+         // count == 0 : one-shot event that has not fired
+         // count ==-1 : one-shot event that fired this round / disabled
+-        int32_t count;
++        int32_t count; // 这里
+ 
+     private:
+         virtual ~Connection();
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 7edbdc5..7008950 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -67,7 +67,7 @@ Layer::Layer(SurfaceFlinger* flinger, const sp<Client>& client)
+         mProtectedByApp(false)
+ {
+     mCurrentCrop.makeInvalid();
+-    glGenTextures(1, &mTextureName);
++    glGenTextures(1, &mTextureName); // 这是 generate texture
+ }
+ 
+ void Layer::onLayerDisplayed(const sp<const DisplayDevice>& hw,
+@@ -95,7 +95,13 @@ void Layer::onFirstRef()
+     };
+ 
+     // Creates a custom BufferQueue for SurfaceTexture to use
+-    sp<BufferQueue> bq = new SurfaceTextureLayer();
++    sp<BufferQueue> bq = new SurfaceTextureLayer(); // 谁来往里面填数据？
++
++    /**
++	 * SurfaceTexture(GLuint tex, bool allowSynchronousMode = true,
++     *         GLenum texTarget = GL_TEXTURE_EXTERNAL_OES, bool useFenceSync = true,
++     *         const sp<BufferQueue> &bufferQueue = 0);
++	 */
+     mSurfaceTexture = new SurfaceTexture(mTextureName, true,
+             GL_TEXTURE_EXTERNAL_OES, false, bq);
+ 
+@@ -116,12 +122,13 @@ void Layer::onFirstRef()
+ 
+ Layer::~Layer()
+ {
++	// why do not call glDeleteTextures(1, &texture); directly?
+     mFlinger->deleteTextureAsync(mTextureName);
+ }
+ 
+ void Layer::onFrameQueued() {
+     android_atomic_inc(&mQueuedFrames);
+-    mFlinger->signalLayerUpdate();
++    mFlinger->signalLayerUpdate(); // 通知Layer里面有数据过来了(也就是BufferQueue有数据)
+ }
+ 
+ // called with SurfaceFlinger::mStateLock as soon as the layer is entered
+@@ -140,7 +147,7 @@ sp<ISurface> Layer::createSurface()
+ {
+     class BSurface : public BnSurface, public LayerCleaner {
+         wp<const Layer> mOwner;
+-        virtual sp<ISurfaceTexture> getSurfaceTexture() const {
++        virtual sp<ISurfaceTexture> getSurfaceTexture() const { // 谁来调用这个方法？当然是gui/Surface.h|cpp
+             sp<ISurfaceTexture> res;
+             sp<const Layer> that( mOwner.promote() );
+             if (that != NULL) {
+@@ -780,6 +787,7 @@ void Layer::updateTransformHint(const sp<const DisplayDevice>& hw) const {
+             orientation = 0;
+         }
+     }
++    // 不是 debug 状态就开启 transform hint, 因为它只是用来提高 performance 的
+     mSurfaceTexture->setTransformHint(orientation);
+ }
+ 
+diff --git a/services/surfaceflinger/LayerBase.cpp b/services/surfaceflinger/LayerBase.cpp
+index 9b03c74..f3bc703 100644
+--- a/services/surfaceflinger/LayerBase.cpp
++++ b/services/surfaceflinger/LayerBase.cpp
+@@ -506,7 +506,7 @@ LayerBaseClient::~LayerBaseClient()
+ sp<ISurface> LayerBaseClient::createSurface()
+ {
+     class BSurface : public BnSurface, public LayerCleaner {
+-        virtual sp<ISurfaceTexture> getSurfaceTexture() const { return 0; }
++        virtual sp<ISurfaceTexture> getSurfaceTexture() const { return 0; } // 空实现
+     public:
+         BSurface(const sp<SurfaceFlinger>& flinger,
+                 const sp<LayerBaseClient>& layer)
+diff --git a/services/surfaceflinger/LayerBase.h b/services/surfaceflinger/LayerBase.h
+index 4d5a5b0..d75b80c 100644
+--- a/services/surfaceflinger/LayerBase.h
++++ b/services/surfaceflinger/LayerBase.h
+@@ -119,7 +119,7 @@ public:
+             void commitTransaction();
+             bool requestTransaction();
+             void forceVisibilityTransaction();
+-            
++
+             uint32_t getTransactionFlags(uint32_t flags);
+             uint32_t setTransactionFlags(uint32_t flags);
+ 
+diff --git a/services/surfaceflinger/MessageQueue.cpp b/services/surfaceflinger/MessageQueue.cpp
+index 3f77f74..87d1c8a 100644
+--- a/services/surfaceflinger/MessageQueue.cpp
++++ b/services/surfaceflinger/MessageQueue.cpp
+@@ -93,7 +93,7 @@ void MessageQueue::init(const sp<SurfaceFlinger>& flinger)
+ void MessageQueue::setEventThread(const sp<EventThread>& eventThread)
+ {
+     mEventThread = eventThread;
+-    mEvents = eventThread->createEventConnection();
++    mEvents = eventThread->createEventConnection(); // 这里 IDisplayEventConnection
+     mEventTube = mEvents->getDataChannel();
+     mLooper->addFd(mEventTube->getFd(), 0, ALOOPER_EVENT_INPUT,
+             MessageQueue::cb_eventReceiver, this);
+@@ -147,15 +147,15 @@ void MessageQueue::invalidate() {
+ #if INVALIDATE_ON_VSYNC
+     mEvents->requestNextVsync();
+ #else
+-    mHandler->dispatchInvalidate();
++    mHandler->dispatchInvalidate(); // 以Handler软件方式
+ #endif
+ }
+ 
+ void MessageQueue::refresh() {
+ #if INVALIDATE_ON_VSYNC
+-    mHandler->dispatchRefresh();
++    mHandler->dispatchRefresh(); // 以Handler软件方式
+ #else
+-    mEvents->requestNextVsync();
++    mEvents->requestNextVsync(); // 为什么这里是相反的？
+ #endif
+ }
+ 
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 9afa4c1..036812f 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -186,7 +186,7 @@ sp<IBinder> SurfaceFlinger::createDisplay(const String8& displayName,
+     DisplayDeviceState info(DisplayDevice::DISPLAY_VIRTUAL);
+     info.displayName = displayName;
+     info.isSecure = secure;
+-    mCurrentState.displays.add(token, info);
++    mCurrentState.displays.add(token, info); // 添加一个display进来
+ 
+     return token;
+ }
+@@ -198,7 +198,7 @@ void SurfaceFlinger::createBuiltinDisplayLocked(DisplayDevice::DisplayType type)
+     DisplayDeviceState info(type);
+     // All non-virtual displays are currently considered secure.
+     info.isSecure = true;
+-    mCurrentState.displays.add(mBuiltinDisplays[type], info);
++    mCurrentState.displays.add(mBuiltinDisplays[type], info); // 默认的display
+ }
+ 
+ sp<IBinder> SurfaceFlinger::getBuiltInDisplay(int32_t id) {
+@@ -434,7 +434,7 @@ void SurfaceFlinger::initializeGL(EGLDisplay display) {
+         inline uint16_t operator() (int r, int g, int b) const {
+             return (r<<11)|(g<<5)|b;
+         }
+-    } pack565;
++    } pack565; // 重载() 三个整数存在一个里面
+ 
+     const uint16_t protTexData[] = { pack565(0x03, 0x03, 0x03) };
+     glGenTextures(1, &mProtectedTexName);
+@@ -481,7 +481,7 @@ status_t SurfaceFlinger::readyToRun()
+     // Initialize the H/W composer object.  There may or may not be an
+     // actual hardware composer underneath.
+     mHwc = new HWComposer(this,
+-            *static_cast<HWComposer::EventHandler *>(this));
++            *static_cast<HWComposer::EventHandler *>(this)); // 传入EventHandler实例到HWComposer
+ 
+     // initialize the config and context
+     EGLint format = mHwc->getVisualID();
+@@ -491,21 +491,22 @@ status_t SurfaceFlinger::readyToRun()
+     LOG_ALWAYS_FATAL_IF(mEGLContext == EGL_NO_CONTEXT,
+             "couldn't create EGLContext");
+ 
+-    // initialize our non-virtual displays
++    // initialize our non-virtual displays // so far may or may not be has 2 in total
+     for (size_t i=0 ; i<DisplayDevice::NUM_DISPLAY_TYPES ; i++) {
+         DisplayDevice::DisplayType type((DisplayDevice::DisplayType)i);
+         // set-up the displays that are already connected
+-        if (mHwc->isConnected(i) || type==DisplayDevice::DISPLAY_PRIMARY) {
++        if (mHwc->isConnected(i) || type==DisplayDevice::DISPLAY_PRIMARY) { // 默认 primary display 总是连上的
++        																	// 通常这里只会一个 primary display 
+             // All non-virtual displays are currently considered secure.
+             bool isSecure = true;
+             createBuiltinDisplayLocked(type);
+             wp<IBinder> token = mBuiltinDisplays[i];
+ 
+-            sp<FramebufferSurface> fbs = new FramebufferSurface(*mHwc, i);
++            sp<FramebufferSurface> fbs = new FramebufferSurface(*mHwc, i); // ConsumerBase EGL处理完成之后它会被通知到
+             sp<SurfaceTextureClient> stc = new SurfaceTextureClient(
+-                        static_cast< sp<ISurfaceTexture> >(fbs->getBufferQueue()));
++                        static_cast< sp<ISurfaceTexture> >(fbs->getBufferQueue())); // ANativeWindow
+             sp<DisplayDevice> hw = new DisplayDevice(this,
+-                    type, isSecure, token, stc, fbs, mEGLConfig);
++                    type, isSecure, token, stc, fbs, mEGLConfig); // 可是是谁把数据喂给DisplayDevice的呢？
+             if (i > DisplayDevice::DISPLAY_PRIMARY) {
+                 // FIXME: currently we don't get blank/unblank requests
+                 // for displays other than the main display, so we always
+@@ -540,7 +541,7 @@ status_t SurfaceFlinger::readyToRun()
+     mReadyToRunBarrier.open();
+ 
+     // set initial conditions (e.g. unblank default device)
+-    initializeDisplays();
++    initializeDisplays(); // 初始化 display
+ 
+     // start boot animation
+     startBootAnim();
+@@ -727,7 +728,7 @@ bool SurfaceFlinger::threadLoop() {
+     return true;
+ }
+ 
+-void SurfaceFlinger::onVSyncReceived(int type, nsecs_t timestamp) {
++void SurfaceFlinger::onVSyncReceived(int type, nsecs_t timestamp) { // 实现了HWComposer的EventHandler接口
+     if (mEventThread == NULL) {
+         // This is a temporary workaround for b/7145521.  A non-null pointer
+         // does not mean EventThread has finished initializing, so this
+@@ -1182,6 +1183,18 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
+ 
+                     const wp<IBinder>& display(curr.keyAt(i));
+                     if (stc != NULL) {
++                    
++                    /**
++                    DisplayDevice(
++						const sp<SurfaceFlinger>& flinger,
++						DisplayType type,
++						bool isSecure,
++						const wp<IBinder>& displayToken,
++						const sp<ANativeWindow>& nativeWindow,
++						const sp<FramebufferSurface>& framebufferSurface,
++						EGLConfig config);
++                    */
++                    
+                         sp<DisplayDevice> hw = new DisplayDevice(this,
+                                 state.type, state.isSecure, display, stc, fbs,
+                                 mEGLConfig);
+@@ -1806,7 +1819,7 @@ uint32_t SurfaceFlinger::setDisplayStateLocked(const DisplayState& s)
+         const uint32_t what = s.what;
+         if (what & DisplayState::eSurfaceChanged) {
+             if (disp.surface->asBinder() != s.surface->asBinder()) {
+-                disp.surface = s.surface;
++                disp.surface = s.surface; // 设置ISurfaceTexture
+                 flags |= eDisplayTransactionNeeded;
+             }
+         }
+diff --git a/services/surfaceflinger/SurfaceTextureLayer.cpp b/services/surfaceflinger/SurfaceTextureLayer.cpp
+index 0b638b4..bb3ac8a 100644
+--- a/services/surfaceflinger/SurfaceTextureLayer.cpp
++++ b/services/surfaceflinger/SurfaceTextureLayer.cpp
+@@ -28,7 +28,7 @@ namespace android {
+ 
+ 
+ SurfaceTextureLayer::SurfaceTextureLayer()
+-    : BufferQueue(true) {
++    : BufferQueue(true) { // allow synchronous mode
+ }
+ 
+ SurfaceTextureLayer::~SurfaceTextureLayer() {
+@@ -37,7 +37,7 @@ SurfaceTextureLayer::~SurfaceTextureLayer() {
+ status_t SurfaceTextureLayer::connect(int api, QueueBufferOutput* output) {
+     status_t err = BufferQueue::connect(api, output);
+     if (err == NO_ERROR) {
+-        switch(api) {
++        switch (api) {
+             case NATIVE_WINDOW_API_MEDIA:
+             case NATIVE_WINDOW_API_CAMERA:
+                 // Camera preview and videos are rate-limited on the producer
+diff --git a/services/surfaceflinger/Transform.cpp b/services/surfaceflinger/Transform.cpp
+index aca90e0..ba27529 100644
+--- a/services/surfaceflinger/Transform.cpp
++++ b/services/surfaceflinger/Transform.cpp
+@@ -99,6 +99,11 @@ float Transform::ty() const {
+     return mMatrix[2][1];
+ }
+ 
++/**
++ * 1.0  0.0  0.0
++ * 0.0  1.0  0.0
++ * 0.0  0.0  1.0
++ */
+ void Transform::reset() {
+     mType = IDENTITY;
+     for(int i=0 ; i<3 ; i++) {
+@@ -141,7 +146,7 @@ status_t Transform::set(uint32_t flags, float w, float h)
+     Transform H, V, R;
+     if (flags & ROT_90) {
+         // w & h are inverted when rotating by 90 degrees
+-        swap(w, h);
++        swap(w, h); // 为什么它可以直接使用，不用指定类型？
+     }
+ 
+     if (flags & FLIP_H) {
+diff --git a/services/surfaceflinger/Transform.h b/services/surfaceflinger/Transform.h
+index 4fe261a..3be3e36 100644
+--- a/services/surfaceflinger/Transform.h
++++ b/services/surfaceflinger/Transform.h
+@@ -90,8 +90,8 @@ private:
+         inline vec3(float a, float b, float c) {
+             v[0] = a; v[1] = b; v[2] = c;
+         }
+-        inline float operator [] (int i) const { return v[i]; }
+-        inline float& operator [] (int i) { return v[i]; }
++        inline float operator [] (int i) const { return v[i]; } // 返回 值
++        inline float& operator [] (int i) { return v[i]; } // 返回 引用
+     };
+     struct vec2 {
+         float v[2];
+@@ -103,7 +103,7 @@ private:
+         inline float& operator [] (int i) { return v[i]; }
+     };
+     struct mat33 {
+-        vec3 v[3];
++        vec3 v[3]; // 3 * 3 matrix
+         inline const vec3& operator [] (int i) const { return v[i]; }
+         inline vec3& operator [] (int i) { return v[i]; }
+     };
+@@ -118,7 +118,7 @@ private:
+     static bool isZero(float f);
+ 
+     mat33               mMatrix;
+-    mutable uint32_t    mType;
++    mutable uint32_t    mType; // type_mask 每个 8 位？
+ };
+ 
+ // ---------------------------------------------------------------------------
