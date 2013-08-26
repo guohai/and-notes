@@ -1,0 +1,846 @@
+diff --git a/QCamera/HAL2/core/inc/QCameraHWI.h b/QCamera/HAL2/core/inc/QCameraHWI.h
+index b71f0dd..36e9ec2 100644
+--- a/QCamera/HAL2/core/inc/QCameraHWI.h
++++ b/QCamera/HAL2/core/inc/QCameraHWI.h
+@@ -466,7 +466,7 @@ public:
+     bool isCameraReady();
+     ~QCameraHardwareInterface();
+ 
+-    mm_camear_mem_vtbl_t mMemHooks;
++    mm_camear_mem_vtbl_t mMemHooks; // 这是神马？
+     mm_camera_vtbl_t *mCameraHandle;
+     uint32_t mChannelId;
+ 
+diff --git a/QCamera/HAL2/core/inc/QCameraStream.h b/QCamera/HAL2/core/inc/QCameraStream.h
+index db78a5e..f489cfb 100644
+--- a/QCamera/HAL2/core/inc/QCameraStream.h
++++ b/QCamera/HAL2/core/inc/QCameraStream.h
+@@ -78,12 +78,12 @@ typedef struct {
+ class QCameraStream {
+ 
+ public:
+-    bool mInit;
++    bool mInit; // 是否执行过initStream
+     bool mActive;
+ 
+     uint32_t mCameraHandle;
+     uint32_t mChannelId;
+-    uint32_t mMmStreamId;
++    uint32_t mMmStreamId; // 当前stream的id(add stream之后通过mm_camera_stream的get_stream_inst_handle找DRV分配而来)
+     uint32_t mWidth;
+     uint32_t mHeight;
+     cam_format_t mFormat;
+@@ -108,8 +108,8 @@ public:
+     int getStreamId() {return mStreamId;}
+     int getMaxBuffers() {return mMaxBuffers;}
+ 
+-    static QCameraStream *getStreamAtId(int id);
+-    static QCameraStream *getStreamAtMmId(uint32_t mm_id);
++    static QCameraStream *getStreamAtId(int id); // 静态方法
++    static QCameraStream *getStreamAtMmId(uint32_t mm_id); // 静态方法
+     static void streamOffAll();
+ 
+     virtual void setHALCameraControl(QCameraHardwareInterface* ctrl);
+@@ -179,8 +179,8 @@ public:
+                         uint32_t Height,
+                         int requestedFormat,
+                         mm_camera_vtbl_t *mm_ops,
+-                        camera_mode_t mode);
+-    static void deleteInstance(QCameraStream *p);
++                        camera_mode_t mode); // 创建
++    static void deleteInstance(QCameraStream *p); // 删除
+ 
+     virtual ~QCameraStream_preview();
+     void *getLastQueuedFrame(void);
+@@ -217,7 +217,7 @@ private:
+     mm_camera_buf_def_t      *mDisplayBuf;
+     Mutex                   mDisplayLock;
+     const camera2_stream_ops_t   *mPreviewWindow;
+-    mm_camera_super_buf_t mNotifyBuffer[16];
++    mm_camera_super_buf_t mNotifyBuffer[16]; // 这是闹哪样？
+     int8_t                  mNumFDRcvd;
+     int                     mVFEOutputs;
+     int                     mHFRFrameCnt;
+diff --git a/QCamera/HAL2/core/src/QCameraHWI.cpp b/QCamera/HAL2/core/src/QCameraHWI.cpp
+index 691389c..861769c 100644
+--- a/QCamera/HAL2/core/src/QCameraHWI.cpp
++++ b/QCamera/HAL2/core/src/QCameraHWI.cpp
+@@ -54,7 +54,8 @@ void *command_thread(void *obj)
+     return NULL;
+ }
+ 
+-int QCameraHardwareInterface::tryRestartStreams(
++int QCameraHardwareInterface::tryRestartStreams( // 因为这个方法是通过notify_request_queue_not_empty呼叫的，而stream可能已经on了
++												 // 但是还是会调用这个方法
+     camera_metadata_entry_t& streams)
+ {
+     int rc = 0;
+@@ -64,7 +65,10 @@ int QCameraHardwareInterface::tryRestartStreams(
+     for (uint32_t i = 0; i < streams.count; i++) {
+         int streamId = streams.data.u8[i];
+         QCameraStream *stream = QCameraStream::getStreamAtId(streamId);
+-        if (!stream->mInit) {
++        if (!stream->mInit) { // 没有执行过initStream，目前initStream都是包含在preview stream的prepareStream当中的
++        					  // 还没有单独执行initStream的地方
++        					  // 也就是可以理解如果这些stream(s)当中包含非preview stream，就need restart
++        					  // 或者是stream(s)创建好之后真的没有调用过initStream
+             needRestart = true;
+             if (stream->mFormat == CAMERA_YUV_420_NV12)
+                 needRecordingHint = true;
+@@ -90,8 +94,8 @@ end:
+     for (uint32_t i = 0; i < streams.count; i++) {
+         int streamId = streams.data.u8[i];
+         QCameraStream *stream = QCameraStream::getStreamAtId(streamId);
+-        if (!stream->mInit) {
+-            rc = stream->prepareStream();
++        if (!stream->mInit) { // 如果没有init过，就去preview
++            rc = stream->prepareStream(); // 如果是preview stream，会执行initStream，否则是空实现
+             if (rc < 0) {
+                 ALOGE("prepareStream for stream %d failed %d", streamId, rc);
+                 return rc;
+@@ -115,7 +119,6 @@ end:
+ 
+ void QCameraHardwareInterface::runCommandThread(void *data)
+ {
+-   
+     /**
+      * This function implements the main service routine for the incoming
+      * frame requests, this thread routine is started everytime we get a 
+@@ -129,10 +132,10 @@ void QCameraHardwareInterface::runCommandThread(void *data)
+     camera_metadata_t *request=NULL;
+     mPendingRequests=0;
+ 
+-    while(mRequestQueueSrc) {
+-        ALOGV("%s:Dequeue request using mRequestQueueSrc:%p",__func__,mRequestQueueSrc);
+-        mRequestQueueSrc->dequeue_request(mRequestQueueSrc,&request);
+-        if(request==NULL) {
++    while (mRequestQueueSrc) {
++        ALOGV("%s:Dequeue request using mRequestQueueSrc:%p", __func__, mRequestQueueSrc);
++        mRequestQueueSrc->dequeue_request(mRequestQueueSrc, &request);
++        if (request==NULL) { // 如果没有请求了，就退出
+             ALOGE("%s:No more requests available from src command \
+                     thread dying",__func__);
+             return;
+@@ -155,14 +158,14 @@ void QCameraHardwareInterface::runCommandThread(void *data)
+             return;
+         }
+ 
+-        res = tryRestartStreams(streams);
++        res = tryRestartStreams(streams); // 有可能stream已经是on的
+         if (res != NO_ERROR) {
+             ALOGE("error tryRestartStreams %d", res);
+             return;
+         }
+ 
+         /* 3rd pass: Turn on all streams requested */
+-        for (uint32_t i = 0; i < streams.count; i++) {
++        for (uint32_t i = 0; i < streams.count; i++) { // 这样的话，难道必然多个stream之间有一定的时差
+             int streamId = streams.data.u8[i];
+             QCameraStream *stream = QCameraStream::getStreamAtId(streamId);
+ 
+@@ -233,7 +236,7 @@ int QCameraHardwareInterface::getBuf(uint32_t camera_handle,
+     /*************Preiew Stream*****************/
+     ALOGE("Interface requesting Preview Buffers");
+     stream->mFrameOffsetInfo=*frame_offset_info;
+-    if(NO_ERROR!=stream->initBuffers()){
++    if (NO_ERROR!=stream->initBuffers()) {
+         return BAD_VALUE;
+     } 
+     ALOGE("Debug : %s : initDisplayBuffers",__func__);
+@@ -272,7 +275,7 @@ QCameraHardwareInterface(int cameraId, int mode)
+     mMemHooks.get_buf=get_buffer_hook;
+     mMemHooks.put_buf=put_buffer_hook;
+ 
+-    mCameraHandle=camera_open(mCameraId, &mMemHooks);
++    mCameraHandle=camera_open(mCameraId, &mMemHooks); // mm_camera_vtbl_t
+     ALOGV("Cam open returned %p",mCameraHandle);
+     if(mCameraHandle == NULL) {
+         ALOGE("startCamera: cam_ops_open failed: id = %d", mCameraId);
+@@ -327,7 +330,7 @@ int QCameraHardwareInterface::notify_request_queue_not_empty()
+         ALOGE("%s:pthread_attr_setdetachstate failed",__func__);
+         return BAD_VALUE;
+     }
+-    if(pthread_create(&mCommandThread,&attr,
++    if (pthread_create(&mCommandThread,&attr,
+                    command_thread, (void *)this)!=0) {
+         ALOGE("%s:pthread_create failed to launch command_thread",__func__);
+         return BAD_VALUE;
+@@ -339,7 +342,7 @@ int QCameraHardwareInterface::notify_request_queue_not_empty()
+ int QCameraHardwareInterface::set_frame_queue_dst_ops(
+     const camera2_frame_queue_dst_ops_t *frame_dst_ops)
+ {
+-    mFrameQueueDst = frame_dst_ops;
++    mFrameQueueDst = frame_dst_ops; // 这个现在似乎没有用到嘛
+     return OK;
+ }
+ 
+@@ -392,13 +395,15 @@ int QCameraHardwareInterface::allocate_stream(
+     uint32_t *usage,
+     uint32_t *max_buffers)
+ {
++	// 这里创建的stream都会添加到mStreamTable里面，然后必要信息通过该方法的入参传出
++	// QCameraHardwareInterface这个class本身不会有任何状态记录
+     int ret = OK;
+     QCameraStream *stream = NULL;
+     camera_mode_t myMode = (camera_mode_t)(CAMERA_MODE_2D|CAMERA_NONZSL_MODE);
+     ALOGE("%s : BEGIN",__func__);
+ 
+     ALOGE("Mymode Preview = %d",myMode);
+-    stream = QCameraStream_preview::createInstance(
++    stream = QCameraStream_preview::createInstance( // 应该所有创建的stream均为preview stream
+                         mCameraHandle->camera_handle,
+                         mChannelId,
+                         width,
+@@ -412,7 +417,7 @@ int QCameraHardwareInterface::allocate_stream(
+         return BAD_VALUE;
+     }
+ 
+-    stream->setPreviewWindow(stream_ops);
++    stream->setPreviewWindow(stream_ops); // 看这里，看这里
+     *stream_id = stream->getStreamId();
+     *max_buffers= stream->getMaxBuffers();
+     ALOGE("%s: stream_id = %d\n", __func__, *stream_id);
+@@ -437,12 +442,12 @@ int QCameraHardwareInterface::register_stream_buffers(
+     QCameraStream_preview *stream = (QCameraStream_preview *)
+                         QCameraStream::getStreamAtId(stream_id);
+ 
+-    if(!stream) {
++    if (!stream) {
+         ALOGE("%s: Request for unknown stream",__func__);
+         return BAD_VALUE;
+     }
+ 
+-    if(NO_ERROR!=stream->registerStreamBuffers(num_buffers, buffers)) {
++    if (NO_ERROR != stream->registerStreamBuffers(num_buffers, buffers)) {
+         ALOGE("%s:registerStreamBuffers failed",__func__);
+         return BAD_VALUE;
+     }
+diff --git a/QCamera/HAL2/core/src/QCameraStream.cpp b/QCamera/HAL2/core/src/QCameraStream.cpp
+index b151e94..b929630 100644
+--- a/QCamera/HAL2/core/src/QCameraStream.cpp
++++ b/QCamera/HAL2/core/src/QCameraStream.cpp
+@@ -104,7 +104,7 @@ void superbuf_cb_routine(mm_camera_super_buf_t *bufs,
+     QCameraHardwareInterface *p_obj=(QCameraHardwareInterface*) userdata;
+     ALOGE("%s: E",__func__);
+ 
+-    //Implement call to JPEG routine in Snapshot here
++    // Implement call to JPEG routine in Snapshot here
+      if(bufs->bufs[0]->stream_id == p_obj->mStreamSnapMain->mMmStreamId){
+          ALOGE("%s : jpeg callback for MM_CAMERA_SNAPSHOT_MAIN", __func__);
+          p_obj->mStreamSnapMain->receiveRawPicture(bufs);
+@@ -126,12 +126,12 @@ void stream_cb_routine(mm_camera_super_buf_t *bufs,
+                        void *userdata)
+ {
+     ALOGE("%s E ", __func__);
+-    QCameraStream *p_obj=(QCameraStream*) userdata;
++    QCameraStream *p_obj = (QCameraStream*) userdata; // 有指定这个callback回来因为谁触发的(每次只有一种情况)
+     ALOGE("DEBUG4:ExtMode:%d,streamid:%d",p_obj->mExtImgMode,bufs->bufs[0]->stream_id);
+-    switch(p_obj->mExtImgMode) {
++    switch (p_obj->mExtImgMode) {
+     case MM_CAMERA_PREVIEW:
+         ALOGE("%s : callback for MM_CAMERA_PREVIEW", __func__);
+-        ((QCameraStream_preview *)p_obj)->dataCallback(bufs);
++        ((QCameraStream_preview *)p_obj)->dataCallback(bufs); // CAMERA_PREVIEW和CAMERA_VIDEO是一样的？
+         break;
+     case MM_CAMERA_VIDEO:
+         ALOGE("%s : callback for MM_CAMERA_VIDEO", __func__);
+@@ -163,7 +163,10 @@ QCameraStream *QCameraStream::mStreamTable[STREAM_TABLE_SIZE];
+ 
+ void QCameraStream::dataCallback(mm_camera_super_buf_t *bufs)
+ {
+-    if(mPendingCount!=0) {
++    if (mPendingCount != 0) { // 这个dataCallback是一直在都在回来么？
++    						   // 而且从代码来看设置下去的callback次数默认是-1，-1就表示infinite。
++    						   // 似乎只能这样才能解释，否则没人触发的话，即使mPendingCount在onNewRequest当中加1了
++    						   // 这里也感知不到
+         ALOGD("Got frame request");
+         pthread_mutex_lock(&mFrameDeliveredMutex);
+         mPendingCount--;
+@@ -173,7 +176,7 @@ void QCameraStream::dataCallback(mm_camera_super_buf_t *bufs)
+         processPreviewFrame(bufs);
+     } else {
+         p_mm_ops->ops->qbuf(mCameraHandle,
+-                mChannelId, bufs->bufs[0]);
++                mChannelId, bufs->bufs[0]); // 如果没有需要数据的情况，直接把buffer压入DRV的队列当中，会call到V4L2的QBUF
+     }
+ }
+ 
+@@ -183,7 +186,7 @@ void QCameraStream::onNewRequest()
+     pthread_mutex_lock(&mFrameDeliveredMutex);
+     ALOGI("Sending Frame request");
+     mPendingCount++;
+-    pthread_cond_wait(&mFrameDeliveredCond,&mFrameDeliveredMutex);
++    pthread_cond_wait(&mFrameDeliveredCond, &mFrameDeliveredMutex); // 等带一个请求处理完，再做下一个请求
+     ALOGV("Got frame");
+     pthread_mutex_unlock(&mFrameDeliveredMutex);
+     ALOGV("%s:X",__func__);
+@@ -195,7 +198,7 @@ int32_t QCameraStream::streamOn()
+    mm_camera_stream_config_t stream_config;
+    ALOGE("%s:streamid:%d",__func__,mMmStreamId);
+    Mutex::Autolock lock(mLock);
+-   if(mActive){
++   if (mActive){
+        ALOGE("%s: Stream:%d is already active",
+             __func__,mMmStreamId);
+        return rc;
+@@ -219,13 +222,20 @@ int32_t QCameraStream::streamOn()
+        ALOGE("%s: config_stream, rc = %d", __func__, rc);
+    }
+ 
+-   rc = p_mm_ops->ops->start_streams(mCameraHandle,
+-                              mChannelId,
+-                              1,
+-                              &mMmStreamId);
+-   if(rc==NO_ERROR)
+-       mActive = true;
+-   return rc;
++	/**
++	 *	static int32_t mm_camera_intf_start_streams(
++                                    uint32_t camera_handler,
++                                    uint32_t ch_id,
++                                    uint8_t num_streams,
++                                    uint32_t *stream_ids)
++     */
++    rc = p_mm_ops->ops->start_streams(mCameraHandle,
++                               mChannelId,
++                               1,
++                               &mMmStreamId); // stream id from DRV
++    if (rc == NO_ERROR)
++        mActive = true;
++    return rc;
+ }
+ 
+ int32_t QCameraStream::streamOff(bool isAsyncCmd)
+@@ -266,17 +276,17 @@ status_t QCameraStream::initStream(mm_camera_img_mode imgmode,
+     mExtImgMode = imgmode;
+     /***********Allocate Stream**************/
+ 
+-    rc=p_mm_ops->ops->add_stream(mCameraHandle,
++    rc = p_mm_ops->ops->add_stream(mCameraHandle,
+                         mChannelId,
+                         stream_cb_routine,
+                         (void *)this,
+                         mExtImgMode,
+-                        0/*sensor_idx*/);
++                        0/*sensor_idx*/); // 所有的stream的callback都会注册到它所在的channel当中，对于硬件来说也不会造成更多的effort
+ 
+     if (rc < 0)
+        goto error1;
+ 
+-    mMmStreamId=rc;
++    mMmStreamId = rc; // 这里是mm_id，找DRV获取的一个handler
+     ALOGE("%s: mMmStreamId = %d\n", __func__, mMmStreamId);
+ 
+     memset(&stream_config, 0, sizeof(mm_camera_stream_config_t));
+@@ -306,7 +316,7 @@ error1:
+     return BAD_VALUE;      
+ end:
+     ALOGE("Setting mInit to true");
+-    mInit=true;
++    mInit = true;
+     return NO_ERROR;
+ 
+ }
+@@ -322,7 +332,7 @@ status_t QCameraStream::deinitStream()
+                               mMmStreamId);
+ 
+     ALOGI("%s: X, Stream = %d\n", __func__, mMmStreamId);
+-    mInit=false;
++    mInit = false;
+     return NO_ERROR;
+ }
+ 
+@@ -385,7 +395,7 @@ int QCameraStream::allocateStreamId() {
+     int i = 0;
+     for (i = 0; i < STREAM_TABLE_SIZE; i++)
+         if (mStreamTable[i] == NULL) {
+-            mStreamTable[i] = this; 
++            mStreamTable[i] = this; // 这里会保存每个stream的对象
+             break;
+         }
+     if (i == STREAM_TABLE_SIZE)
+@@ -408,7 +418,7 @@ QCameraStream *QCameraStream::getStreamAtId(int id) {
+         return mStreamTable[id];
+ }
+ 
+-QCameraStream *QCameraStream::getStreamAtMmId(uint32_t mm_id) {
++QCameraStream *QCameraStream::getStreamAtMmId(uint32_t mm_id) { // 共外界查询stream
+     /*TODO: More efficient to do direct lookup. But it requires
+      *mm-camera-interface to expose a macro for handle-index mapping*/
+     for (int i = 0; i < STREAM_TABLE_SIZE; i++) {
+diff --git a/QCamera/HAL2/core/src/QCameraStream_Preview.cpp b/QCamera/HAL2/core/src/QCameraStream_Preview.cpp
+index c18f97a..a9fe99d 100644
+--- a/QCamera/HAL2/core/src/QCameraStream_Preview.cpp
++++ b/QCamera/HAL2/core/src/QCameraStream_Preview.cpp
+@@ -44,7 +44,7 @@ status_t QCameraStream_preview::setPreviewWindow(const camera2_stream_ops_t* win
+        // relinquishBuffers();
+     }
+     Mutex::Autolock lock(mLock);
+-    mPreviewWindow = window;
++    mPreviewWindow = window; // camera2_stream_ops_t(也就是Camera Service的StreamAdapter)
+     ALOGV(" %s : X ", __FUNCTION__ );
+     return retVal;
+ }
+@@ -57,7 +57,7 @@ int QCameraStream_preview::registerStreamBuffers(int num_buffers,
+     mNumBuffers = num_buffers;
+     mPreviewMemory.buffer_count = num_buffers;
+     for (int i = 0; i < num_buffers; i++) {
+-        mPreviewMemory.buffer_handle[i] = buffers[i];
++        mPreviewMemory.buffer_handle[i] = buffers[i]; // 这些buffer是在Camera Service当中分配的
+         mPreviewMemory.private_buffer_handle[i] = (struct private_handle_t *)buffers[i];
+         ALOGD("%s:Buffer Size:%d",__func__, mPreviewMemory.private_buffer_handle[i]->size);
+     }
+@@ -67,10 +67,10 @@ int QCameraStream_preview::registerStreamBuffers(int num_buffers,
+         return NO_MEMORY;
+     }
+ 
+-   return OK;
++    return OK;
+ }
+ 
+-status_t QCameraStream_preview::initBuffers()
++status_t QCameraStream_preview::initBuffers() // start stream之前要做的事情，参见mm_channel_start_streams MM_STREAM_EVT_GET_BUF
+ {
+     status_t ret = NO_ERROR;
+     int width = mWidth;  /* width of channel  */
+@@ -96,7 +96,7 @@ status_t QCameraStream_preview::initBuffers()
+     memset(mDisplayBuf, 0, sizeof(mm_camera_buf_def_t) * mNumBuffers);
+ 
+     /*allocate memory for the buffers*/
+-    for(int i = 0; i < mNumBuffers; i++){
++    for (int i = 0; i < mNumBuffers; i++){
+         mDisplayBuf[i].num_planes = num_planes;
+         mDisplayBuf[i].buf_idx = i;
+ 
+@@ -132,7 +132,7 @@ status_t QCameraStream_preview::initBuffers()
+         mPreviewMemory.local_flag[i] = BUFFER_NOT_REGGED;
+     for (int i = 0; i < OPAQUE_BUFFER_COUNT; i++) {
+         ALOGE("mPreview Window %p",mPreviewWindow);
+-        int err = mPreviewWindow->dequeue_buffer(mPreviewWindow, &buffer_handle);
++        int err = mPreviewWindow->dequeue_buffer(mPreviewWindow, &buffer_handle); // 取一些空的buffer出来
+         if (err == NO_ERROR && buffer_handle) {
+             int j;
+             for (j = 0; j < mPreviewMemory.buffer_count; j++) {
+@@ -235,14 +235,14 @@ int QCameraStream_preview::prepareStream()
+         ALOGE("%s: Invalid format!!!", __func__);
+         return BAD_VALUE;
+     }
+-    if(NO_ERROR!=initStream(img_mode, format)) {
++    if (NO_ERROR != initStream(img_mode, format)) { // 会add_stream，然后注册stream_cb_routine，然后callback就会不断的回来？
+         ALOGE("Init stream failed");
+         return BAD_VALUE;
+     }
+     return OK;
+ }
+ 
+-status_t QCameraStream_preview::processPreviewFrame (
++status_t QCameraStream_preview::processPreviewFrame(
+   mm_camera_super_buf_t *frame)
+ {
+     ALOGV("%s",__func__);
+@@ -252,12 +252,12 @@ status_t QCameraStream_preview::processPreviewFrame (
+     camera_frame_metadata_t *metadata = NULL;
+ 
+     Mutex::Autolock lock(mLock);
+-    if(!mActive) {
++    if (!mActive) {
+         ALOGE("Preview Stopped. Returning callback");
+         return NO_ERROR;
+     }
+ 
+-    if(mHalCamCtrl==NULL) {
++    if (mHalCamCtrl==NULL) {
+         ALOGE("%s: X: HAL control object not set",__func__);
+        /*Call buf done*/
+        return BAD_VALUE;
+@@ -265,7 +265,7 @@ status_t QCameraStream_preview::processPreviewFrame (
+     nsecs_t timeStamp = seconds_to_nanoseconds(frame->bufs[0]->ts.tv_sec) ;
+     timeStamp += frame->bufs[0]->ts.tv_nsec;
+ 
+-    if(mFirstFrameRcvd == false) {
++    if (mFirstFrameRcvd == false) {
+         //mm_camera_util_profile("HAL: First preview frame received");
+         mFirstFrameRcvd = true;
+     }
+@@ -273,33 +273,40 @@ status_t QCameraStream_preview::processPreviewFrame (
+     //  dumpFrameToFile(frame->bufs[0]);
+ 
+     mPreviewMemoryLock.lock();
+-    mNotifyBuffer[frame->bufs[0]->buf_idx] = *frame;
++    mNotifyBuffer[frame->bufs[0]->buf_idx] = *frame; // 这个mNotifyBuffer是闹哪样？ 把返回的数据给它有什么作用？
+     ALOGE("processPreviewFrame: timeStamp = %lld", (int64_t)timeStamp);
++    // camera2_stream_ops_t这里的mPreviewWindow不能局限的理解为preview window，它应该是一个通用的output窗口
++    // 也就是Camera Service的StreamAdapter
++    // 最终会call到创建stream的时候关联起来的ANativeWindow的queueBuffer
++    // 比如从StreamProcessor进来的create stream就是用户设置的那个Window
++    // 从JPEGProcessor进来的就是指定的那个Window，比如SurfaceTextureClient
++    // 实际就是把一个填满的buffer压入到对应的BufferQueue
+     err = mPreviewWindow->enqueue_buffer(mPreviewWindow, (int64_t)timeStamp,
+-                  &mPreviewMemory.buffer_handle[frame->bufs[0]->buf_idx]);
+-    if(err != 0) {
++                  &mPreviewMemory.buffer_handle[frame->bufs[0]->buf_idx]); // 直接把数据压入了BufferQueue，这里会通过SurfaceFlinger或CPU处理后
++                  														   // 交给FB或者客户端或者重新压入某个队列继续处理
++    if (err != 0) {
+         ALOGE("%s: enqueue_buffer failed, err = %d", __func__, err);
+     }
+     mPreviewMemory.local_flag[frame->bufs[0]->buf_idx] = BUFFER_NOT_OWNED;
+ 
+     buffer_handle_t *buffer_handle = NULL;
+-    err = mPreviewWindow->dequeue_buffer(mPreviewWindow, &buffer_handle);
++    err = mPreviewWindow->dequeue_buffer(mPreviewWindow, &buffer_handle); // 取一个空的buffer出来放到mPreviewMemory当中
+     if (err == NO_ERROR && buffer_handle != NULL) {
+         int rc = MM_CAMERA_OK;
+         ALOGD("%s: dequed buf hdl =%p", __func__, *buffer_handle);
+-        for(i = 0; i < mPreviewMemory.buffer_count; i++) {
+-            if(mPreviewMemory.buffer_handle[i] == *buffer_handle) {
++        for (i = 0; i < mPreviewMemory.buffer_count; i++) {
++            if (mPreviewMemory.buffer_handle[i] == *buffer_handle) {
+                 ALOGE("<DEBUG2>:Found buffer in idx:%d",i);
+                 break;
+             }
+         }
+         if (mPreviewMemory.local_flag[i] == BUFFER_NOT_REGGED) {
+-            mm_camera_buf_def_t buf = mDisplayBuf[i];
++            mm_camera_buf_def_t buf = mDisplayBuf[i]; //
+             mPreviewMemory.local_flag[i] = BUFFER_OWNED;
+             rc = p_mm_ops->ops->qbuf(mCameraHandle, mChannelId, &buf);
+         } else {
+             mPreviewMemory.local_flag[i] = BUFFER_OWNED;
+-            rc = p_mm_ops->ops->qbuf(mCameraHandle, mChannelId, mNotifyBuffer[i].bufs[0]);
++            rc = p_mm_ops->ops->qbuf(mCameraHandle, mChannelId, mNotifyBuffer[i].bufs[0]); // mm_camera_buf_def_t
+         }
+ 
+         if(rc != MM_CAMERA_OK) {
+@@ -339,7 +346,7 @@ QCameraStream_preview::QCameraStream_preview(uint32_t CameraHandle,
+     mHalCamCtrl = NULL;
+     ALOGE("%s: E", __func__);
+ 
+-    mStreamId = allocateStreamId();
++    mStreamId = allocateStreamId(); // 分配stream id
+ 
+     switch (requestedFormat) {
+     case CAMERA2_HAL_PIXEL_FORMAT_OPAQUE:
+diff --git a/QCamera/HAL2/wrapper/QualcommCamera.cpp b/QCamera/HAL2/wrapper/QualcommCamera.cpp
+index 664ee83..10fe0b6 100644
+--- a/QCamera/HAL2/wrapper/QualcommCamera.cpp
++++ b/QCamera/HAL2/wrapper/QualcommCamera.cpp
+@@ -277,7 +277,7 @@ int allocate_stream(const struct camera2_device *device,
+         uint32_t height,
+         int      format,
+         const camera2_stream_ops_t *stream_ops,
+-        uint32_t *stream_id,
++        uint32_t *stream_id, // 从DRV获得的ID
+         uint32_t *format_actual,
+         uint32_t *usage,
+         uint32_t *max_buffers)
+diff --git a/QCamera/stack/mm-camera-interface/inc/mm_camera.h b/QCamera/stack/mm-camera-interface/inc/mm_camera.h
+index c554b21..ee761fd 100644
+--- a/QCamera/stack/mm-camera-interface/inc/mm_camera.h
++++ b/QCamera/stack/mm-camera-interface/inc/mm_camera.h
+@@ -160,7 +160,7 @@ typedef struct {
+ } mm_camera_poll_thread_t;
+ 
+ /* mm_stream */
+-typedef enum {
++typedef enum { // 这里的状态要仔细，每执行一次方法，状态就需要变化
+     MM_STREAM_STATE_NOTUSED = 0,      /* not used */
+     MM_STREAM_STATE_INITED,           /* inited  */
+     MM_STREAM_STATE_ACQUIRED,         /* acquired, fd opened  */
+@@ -364,7 +364,7 @@ typedef struct mm_channel {
+ 
+     /* container for all streams in channel
+     * stream is indexed by ext_image_mode */
+-    mm_stream_t streams[MM_CAMEAR_STRAEM_NUM_MAX];
++    mm_stream_t streams[MM_CAMEAR_STRAEM_NUM_MAX]; // 看这里 mm_stream_fsm_fn() 需要用到
+ 
+     /* reference to parent cam_obj */
+     struct mm_camera_obj* cam_obj;
+@@ -400,14 +400,14 @@ typedef struct mm_camera_obj {
+     mm_camera_2nd_sensor_t second_sensor; /*second sensor info */
+     pthread_mutex_t cam_lock;
+     pthread_mutex_t cb_lock; /* lock for evt cb */
+-    mm_channel_t ch[MM_CAMERA_CHANNEL_MAX];
++    mm_channel_t ch[MM_CAMERA_CHANNEL_MAX]; // CHANNEL在这里是什么概念(同时开的摄像头的数量)？反正目前这里只允许同时存在1个
+     mm_camera_evt_obj_t evt[MM_CAMERA_EVT_TYPE_MAX];
+     uint32_t evt_type_mask;
+     mm_camear_mem_vtbl_t *mem_vtbl; /* vtable for memory management */
+     mm_camera_poll_thread_t evt_poll_thread; /* evt poll thread */
+     mm_camera_cmd_thread_t evt_thread;       /* thread for evt CB */
+     mm_camera_cmd_thread_t async_cmd_thread; /* thread for async cmd */
+-    mm_camera_vtbl_t vtbl;
++    mm_camera_vtbl_t vtbl; // open camera返回这个
+ 
+     /* some local variables */
+     uint32_t snap_burst_num_by_user;
+@@ -572,11 +572,12 @@ extern int32_t mm_channel_reg_stream_cb(mm_channel_t *my_obj,
+                                         uint32_t ext_image_mode,
+                                         uint32_t sensor_idx);
+ 
+-/* mm_stream */
++/* mm_stream */ // 和上面mm_channel_fsm_fn注意区别
+ extern int32_t mm_stream_fsm_fn(mm_stream_t *my_obj,
+                                 mm_stream_evt_type_t evt,
+                                 void * in_val,
+                                 void * out_val);
++
+ /* Allow other stream to register dataCB at certain stream.
+  * This is for use case of video sized live snapshot,
+  * because snapshot stream need register one time CB at video stream.
+diff --git a/QCamera/stack/mm-camera-interface/inc/mm_camera_interface.h b/QCamera/stack/mm-camera-interface/inc/mm_camera_interface.h
+index 8a95913..28412d5 100644
+--- a/QCamera/stack/mm-camera-interface/inc/mm_camera_interface.h
++++ b/QCamera/stack/mm-camera-interface/inc/mm_camera_interface.h
+@@ -236,11 +236,11 @@ typedef struct {
+                                  mm_camera_parm_type_t parm_type,
+                                  uint8_t *support_set_parm,
+                                  uint8_t *support_get_parm);
+-    /* set a parm s current value */
++    /* set a parm's current value */
+     int32_t (*set_parm) (uint32_t camera_handle,
+                          mm_camera_parm_type_t parm_type,
+                          void* p_value);
+-    /* get a parm s current value */
++    /* get a parm's current value */
+     int32_t (*get_parm) (uint32_t camera_handle,
+                          mm_camera_parm_type_t parm_type,
+                          void* p_value);
+@@ -298,13 +298,13 @@ typedef struct {
+     int32_t (*prepare_snapshot) (uint32_t camera_handle,
+                                  uint32_t ch_id,
+                                  uint32_t sensor_idx);
+-    /* set a parm s current value */
++    /* set a parm's current value */
+     int32_t (*set_stream_parm) (uint32_t camera_handle,
+                                 uint32_t ch_id,
+                                 uint32_t s_id,
+                                 mm_camera_stream_parm_t parm_type,
+                                 void* p_value);
+-    /* get a parm s current value */
++    /* get a parm's current value */
+     int32_t (*get_stream_parm) (uint32_t camera_handle,
+                                 uint32_t ch_id,
+                                 uint32_t s_id,
+diff --git a/QCamera/stack/mm-camera-interface/src/mm_camera.c b/QCamera/stack/mm-camera-interface/src/mm_camera.c
+index 826b5dd..bc10f72 100644
+--- a/QCamera/stack/mm-camera-interface/src/mm_camera.c
++++ b/QCamera/stack/mm-camera-interface/src/mm_camera.c
+@@ -766,7 +766,7 @@ uint32_t mm_camera_add_channel(mm_camera_obj_t *my_obj)
+         pthread_mutex_init(&ch_obj->ch_lock, NULL);
+     }
+ 
+-    mm_channel_init(ch_obj);
++    mm_channel_init(ch_obj); // channel添加进来的时候被初始化，状态为STOPPED
+     pthread_mutex_unlock(&my_obj->cam_lock);
+ 
+     return ch_hdl;
+@@ -947,8 +947,8 @@ int32_t mm_camera_start_streams(mm_camera_obj_t *my_obj,
+ 
+         memset(&payload, 0, sizeof(mm_evt_payload_start_stream_t));
+         payload.num_streams = num_streams;
+-        payload.stream_ids = stream_ids;
+-        rc = mm_channel_fsm_fn(ch_obj,
++        payload.stream_ids = stream_ids; // 如果payload.stream_ids指向的值变换了，间接stream_ids指向的值就变了
++        rc = mm_channel_fsm_fn(ch_obj, // mm_channel_t
+                                MM_CHANNEL_EVT_START_STREAM,
+                                (void*)&payload,
+                                NULL);
+diff --git a/QCamera/stack/mm-camera-interface/src/mm_camera_channel.c b/QCamera/stack/mm-camera-interface/src/mm_camera_channel.c
+index cf47cfd..eefc714 100644
+--- a/QCamera/stack/mm-camera-interface/src/mm_camera_channel.c
++++ b/QCamera/stack/mm-camera-interface/src/mm_camera_channel.c
+@@ -337,7 +337,7 @@ int32_t mm_channel_fsm_fn(mm_channel_t *my_obj,
+     int32_t rc = -1;
+ 
+     CDBG("%s : E state = %d",__func__,my_obj->state);
+-    switch (my_obj->state) {
++    switch (my_obj->state) { // 获取mm_channel_t状态，进入对应状态的处理方法，然后再根据evt分发到mm_stream_fn_*
+     case MM_CHANNEL_STATE_NOTUSED:
+         rc = mm_channel_fsm_fn_notused(my_obj, evt, in_val, out_val);
+         break;
+@@ -672,12 +672,12 @@ uint32_t mm_channel_add_stream(mm_channel_t *my_obj,
+     stream_obj->fd = -1;
+     pthread_mutex_init(&stream_obj->buf_lock, NULL);
+     pthread_mutex_init(&stream_obj->cb_lock, NULL);
+-    stream_obj->state = MM_STREAM_STATE_INITED;
++    stream_obj->state = MM_STREAM_STATE_INITED; // mm_stream_state_type_t
+ 
+     /* acquire stream */
+     rc = mm_stream_fsm_fn(stream_obj, MM_STREAM_EVT_ACQUIRE, NULL, NULL);
+     if (0 == rc) {
+-        s_hdl = stream_obj->my_hdl;
++        s_hdl = stream_obj->my_hdl; // add stream success
+     } else {
+         /* error during acquire, de-init */
+         pthread_mutex_destroy(&stream_obj->buf_lock);
+@@ -806,6 +806,8 @@ int32_t mm_channel_start_streams(mm_channel_t *my_obj,
+                                  uint8_t num_streams,
+                                  uint32_t *stream_ids)
+ {
++	// 这里stream_ids是如何给赋值的
++
+     int32_t rc = 0;
+     int i, j;
+     mm_stream_t* s_objs[MM_CAMEAR_MAX_STRAEM_BUNDLE] = {NULL};
+@@ -854,12 +856,28 @@ int32_t mm_channel_start_streams(mm_channel_t *my_obj,
+         }
+     }
+ 
++	/** 注意这里的状态切换 */
++	/* mm_stream
++	typedef enum {
++		MM_STREAM_STATE_NOTUSED = 0,      /* not used /
++		MM_STREAM_STATE_INITED,           /* inited  /
++		MM_STREAM_STATE_ACQUIRED,         /* acquired, fd opened  /
++		MM_STREAM_STATE_CFG,              /* fmt & dim configured /
++		MM_STREAM_STATE_BUFFED,           /* buf allocated /
++		MM_STREAM_STATE_REG,              /* buf regged, stream off /
++		MM_STREAM_STATE_ACTIVE_STREAM_ON, /* active with stream on /
++		MM_STREAM_STATE_ACTIVE_STREAM_OFF, /* active with stream off /
++		MM_STREAM_STATE_MAX
++	} mm_stream_state_type_t;
++	*/
++
+     for (i=0; i<num_streams_to_start; i++) {
+         /* allocate buf */
+         rc = mm_stream_fsm_fn(s_objs[i],
+                               MM_STREAM_EVT_GET_BUF,
+                               NULL,
+-                              NULL);
++                              NULL); // 参见QCameraHardwareInterface->getBuf
++                              		  // QCameraStream_preview::initBuffers
+         if (0 != rc) {
+             CDBG_ERROR("%s: get buf failed at idx(%d)", __func__, i);
+             break;
+@@ -887,6 +905,7 @@ int32_t mm_channel_start_streams(mm_channel_t *my_obj,
+             }
+         }
+ 
++		/* 看这里，看这里 */
+         /* start stream */
+         rc = mm_stream_fsm_fn(s_objs[i],
+                               MM_STREAM_EVT_START,
+diff --git a/QCamera/stack/mm-camera-interface/src/mm_camera_interface.c b/QCamera/stack/mm-camera-interface/src/mm_camera_interface.c
+index 54cf3ac..778f76f 100644
+--- a/QCamera/stack/mm-camera-interface/src/mm_camera_interface.c
++++ b/QCamera/stack/mm-camera-interface/src/mm_camera_interface.c
+@@ -43,7 +43,23 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+ static pthread_mutex_t g_intf_lock = PTHREAD_MUTEX_INITIALIZER;
+ 
+-static mm_camera_ctrl_t g_cam_ctrl = {{{0, {0, 0, 0, 0}, 0, 0}}, 0, {{0}}, {0}};
++/*
++
++typedef struct {
++    mm_camera_info_t camera[MSM_MAX_CAMERA_SENSORS];
++    int8_t num_cam;
++    char video_dev_name[MSM_MAX_CAMERA_SENSORS][MM_CAMERA_DEV_NAME_LEN];
++    mm_camera_obj_t *cam_obj[MSM_MAX_CAMERA_SENSORS];
++} mm_camera_ctrl_t;
++
++*/
++
++static mm_camera_ctrl_t g_cam_ctrl = {
++							{{0, {0, 0, 0, 0}, 0, 0}}, // 数组
++							0,
++							{{0}}, // 2维数组
++							{0} // 数组
++						};
+ 
+ static pthread_mutex_t g_handler_lock = PTHREAD_MUTEX_INITIALIZER;
+ static uint16_t g_handler_history_count = 0; /* history count for handler */
+@@ -133,7 +149,7 @@ static int32_t mm_camera_intf_is_parm_supported(uint32_t camera_handler,
+     return rc;
+ }
+ 
+-/* set a parm s current value */
++/* set a parm's current value */
+ static int32_t mm_camera_intf_set_parm(uint32_t camera_handler,
+                                    mm_camera_parm_type_t parm_type,
+                                    void* p_value)
+@@ -154,7 +170,7 @@ static int32_t mm_camera_intf_set_parm(uint32_t camera_handler,
+     return rc;
+ }
+ 
+-/* get a parm s current value */
++/* get a parm's current value */
+ static int32_t mm_camera_intf_get_parm(uint32_t camera_handler,
+                                 mm_camera_parm_type_t parm_type,
+                                 void* p_value)
+diff --git a/QCamera/stack/mm-camera-interface/src/mm_camera_stream.c b/QCamera/stack/mm-camera-interface/src/mm_camera_stream.c
+index e9168a3..a77f580 100644
+--- a/QCamera/stack/mm-camera-interface/src/mm_camera_stream.c
++++ b/QCamera/stack/mm-camera-interface/src/mm_camera_stream.c
+@@ -125,9 +125,9 @@ static int get_stream_inst_handle(mm_stream_t *my_obj)
+   struct msm_camera_v4l2_ioctl_t v4l2_ioctl;
+ 
+   v4l2_ioctl.id = MSM_V4L2_PID_INST_HANDLE;
+-  v4l2_ioctl.ioctl_ptr = &inst_handle;
++  v4l2_ioctl.ioctl_ptr = &inst_handle; // 这是MSM私有的一种东西，称为stream id
+   v4l2_ioctl.len = sizeof(inst_handle);
+-  rc = ioctl(my_obj->fd, MSM_CAM_V4L2_IOCTL_PRIVATE_G_CTRL, &v4l2_ioctl);
++  rc = ioctl(my_obj->fd, MSM_CAM_V4L2_IOCTL_PRIVATE_G_CTRL, &v4l2_ioctl); // 特有的V4L2命令
+   if (rc) {
+     CDBG_ERROR("%s Error getting mctl pp inst handle", __func__);
+     return rc;
+@@ -330,7 +330,7 @@ static void mm_stream_dispatch_app_data(mm_camera_cmdcb_t *cmd_cb,
+ 
+             /* if >0, reduce count by 1 every time we called CB until reaches 0
+              * when count reach 0, reset the buf_cb to have no CB */
+-            if (my_obj->buf_cb[i].cb_count > 0) {
++            if (my_obj->buf_cb[i].cb_count > 0) { // 知道cb_count为0的时候就不call了
+                 my_obj->buf_cb[i].cb_count--;
+                 if (0 == my_obj->buf_cb[i].cb_count) {
+                     my_obj->buf_cb[i].cb = NULL;
+@@ -364,10 +364,10 @@ int32_t mm_stream_fsm_fn(mm_stream_t *my_obj,
+     case MM_STREAM_STATE_CFG:
+         rc = mm_stream_fsm_cfg(my_obj, evt, in_val, out_val);
+         break;
+-    case MM_STREAM_STATE_BUFFED:
++    case MM_STREAM_STATE_BUFFED: // buffer已经分配
+         rc = mm_stream_fsm_buffed(my_obj, evt, in_val, out_val);
+         break;
+-    case MM_STREAM_STATE_REG:
++    case MM_STREAM_STATE_REG: // buffer已经注册，等待stream-on
+         rc = mm_stream_fsm_reg(my_obj, evt, in_val, out_val);
+         break;
+     case MM_STREAM_STATE_ACTIVE_STREAM_ON:
+@@ -414,7 +414,7 @@ int32_t mm_stream_fsm_inited(mm_stream_t *my_obj,
+                  __func__, my_obj->fd, my_obj->ext_image_mode, my_obj->sensor_idx);
+         rc = mm_stream_set_ext_mode(my_obj);
+         if (0 == rc) {
+-            my_obj->state = MM_STREAM_STATE_ACQUIRED;
++            my_obj->state = MM_STREAM_STATE_ACQUIRED; // mm_stream_state_type_t
+         } else {
+             /* failed setting ext_mode
+              * close fd */
+@@ -583,10 +583,10 @@ int32_t mm_stream_fsm_reg(mm_stream_t * my_obj,
+     case MM_STREAM_EVT_START:
+         {
+             /* launch cmd thread if CB is not null */
+-            if (NULL != my_obj->buf_cb) {
++            if (NULL != my_obj->buf_cb) { // 这里传进来的callback就有用了
+                 mm_camera_cmd_thread_launch(&my_obj->cmd_thread,
+                                 mm_stream_dispatch_app_data,
+-                                (void *)my_obj);
++                                (void *)my_obj); // 会启动一个线程，然后一个双链表实现的简单队列，往里面丢回调动作
+ 
+             }
+ 
+@@ -1046,7 +1046,7 @@ int32_t mm_stream_qbuf(mm_stream_t *my_obj, mm_camera_buf_def_t *buf)
+ 
+     memset(&buffer, 0, sizeof(buffer));
+     buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+-    buffer.memory = V4L2_MEMORY_USERPTR;
++    buffer.memory = V4L2_MEMORY_USERPTR; // 用户空间类型
+     buffer.index = buf->buf_idx;
+     buffer.m.planes = &buf->planes[0];
+     buffer.length = buf->num_planes;
+@@ -1205,7 +1205,7 @@ int32_t mm_stream_init_bufs(mm_stream_t * my_obj)
+     memset(my_obj->buf_status, 0, sizeof(mm_stream_buf_status_t) * my_obj->buf_num);
+     memset(reg_flags, 0, sizeof(uint8_t) * my_obj->buf_num);
+ 
+-    mem_vtbl = my_obj->ch_obj->cam_obj->mem_vtbl;
++    mem_vtbl = my_obj->ch_obj->cam_obj->mem_vtbl; // 这里
+     rc = mem_vtbl->get_buf(my_obj->ch_obj->cam_obj->my_hdl,
+                            my_obj->ch_obj->my_hdl,
+                            my_obj->my_hdl,
