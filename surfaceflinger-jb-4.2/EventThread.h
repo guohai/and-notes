@@ -49,12 +49,12 @@ class EventThread : public Thread {
         // count >= 1 : continuous event. count is the vsync rate
         // count == 0 : one-shot event that has not fired
         // count ==-1 : one-shot event that fired this round / disabled
-        int32_t count; // 这里
+        int32_t count; // 这里 也就是说-1的情况是需要requestNextVsync触发的？
 
     private:
         virtual ~Connection();
         virtual void onFirstRef();
-        virtual sp<BitTube> getDataChannel() const;
+        virtual sp<BitTube> getDataChannel() const; // 客户端会用到
         virtual void setVsyncRate(uint32_t count);
         virtual void requestNextVsync();    // asynchronous
         sp<EventThread> const mEventThread;
@@ -102,7 +102,7 @@ private:
     mutable Condition mCondition;
 
     // protected by mLock
-    SortedVector< wp<Connection> > mDisplayEventConnections;
+    SortedVector< wp<Connection> > mDisplayEventConnections; // 这个为什么是弱引用，因为它不掌管生死
     Vector< DisplayEventReceiver::Event > mPendingEvents;
     DisplayEventReceiver::Event mVSyncEvent[HWC_DISPLAY_TYPES_SUPPORTED];
     bool mUseSoftwareVSync;

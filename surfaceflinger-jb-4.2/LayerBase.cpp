@@ -84,7 +84,7 @@ void LayerBase::initStates(uint32_t w, uint32_t h, uint32_t flags)
     mCurrentState.requested = mCurrentState.active;
 
     // drawing state & current state are identical
-    mDrawingState = mCurrentState;
+    mDrawingState = mCurrentState; // 既然一样，这是要闹哪样？
 }
 
 bool LayerBase::needsFiltering(const sp<const DisplayDevice>& hw) const {
@@ -101,7 +101,7 @@ void LayerBase::forceVisibilityTransaction() {
     requestTransaction();
 }
 bool LayerBase::requestTransaction() {
-    int32_t old = setTransactionFlags(eTransactionNeeded);
+    int32_t old = setTransactionFlags(eTransactionNeeded); // SurfaceFlinger.h
     return ((old & eTransactionNeeded) == 0);
 }
 uint32_t LayerBase::getTransactionFlags(uint32_t flags) {

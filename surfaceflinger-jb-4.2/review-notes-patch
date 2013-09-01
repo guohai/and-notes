@@ -1,19 +1,74 @@
 diff --git a/services/surfaceflinger/DisplayDevice.cpp b/services/surfaceflinger/DisplayDevice.cpp
-index 69b9c34..a9b4206 100644
+index 69b9c34..167f92c 100644
 --- a/services/surfaceflinger/DisplayDevice.cpp
 +++ b/services/surfaceflinger/DisplayDevice.cpp
-@@ -136,7 +136,8 @@ void DisplayDevice::init(EGLConfig config)
+@@ -83,7 +83,7 @@ DisplayDevice::DisplayDevice(
+       mDisplay(EGL_NO_DISPLAY),
+       mSurface(EGL_NO_SURFACE),
+       mContext(EGL_NO_CONTEXT),
+-      mDisplayWidth(), mDisplayHeight(), mFormat(),
++      mDisplayWidth(), mDisplayHeight(), mFormat(), // 初始化列表还可以不放数据
+       mFlags(),
+       mPageFlipCount(),
+       mIsSecure(isSecure),
+@@ -136,7 +136,14 @@ void DisplayDevice::init(EGLConfig config)
      EGLSurface surface;
      EGLint w, h;
      EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 -    surface = eglCreateWindowSurface(display, config, window, NULL);
 +    surface = eglCreateWindowSurface(display, config, window, NULL); // 这里会干嘛？ 通过EGL创建一个供绘制的Window，
 +																	  // 理论上EGL处理完的数据也会压入到这个ANativeWindow所关联的BufferQueue
++																	  // 也就是创建DisplayDevice用到的FrameBufferSurface
++																	  // 另外一路，在Layer创建的BufferQueue(SurfaceTextureLayer)，
++																	  // SurfaceTexture(ConsumerBase)收到数据后会去触发VSYNC事件
++																	  // 或者通常的情况是VSYNC事件一直在自动触发(硬件或者软件)
++																	  // 目前等待求证的就是Layer可能有多个，EGL是否是先把Layer收到的数据合并
++																	  // 之后放到FrameBufferSurface里面，也就是通过这里的ANativeWindow
      eglQuerySurface(display, surface, EGL_WIDTH,  &mDisplayWidth);
      eglQuerySurface(display, surface, EGL_HEIGHT, &mDisplayHeight);
  
+@@ -168,7 +175,7 @@ void DisplayDevice::init(EGLConfig config)
+     }
+ 
+     // initialize the display orientation transform.
+-    setProjection(DisplayState::eOrientationDefault, mViewport, mFrame);
++    setProjection(DisplayState::eOrientationDefault, mViewport, mFrame); // mViewport和mFrame这样赋值有什么意义？
+ }
+ 
+ void DisplayDevice::setDisplayName(const String8& displayName) {
+@@ -304,7 +311,7 @@ bool DisplayDevice::getSecureLayerVisible() const {
+ Region DisplayDevice::getDirtyRegion(bool repaintEverything) const {
+     Region dirty;
+     if (repaintEverything) {
+-        dirty.set(getBounds());
++        dirty.set(getBounds()); // getBounds()是整个屏幕大小
+     } else {
+         const Transform& planeTransform(mGlobalTransform);
+         dirty = planeTransform.transform(this->dirtyRegion);
+@@ -335,7 +342,7 @@ bool DisplayDevice::isScreenAcquired() const {
+ 
+ void DisplayDevice::setLayerStack(uint32_t stack) {
+     mLayerStack = stack;
+-    dirtyRegion.set(bounds());
++    dirtyRegion.set(bounds()); // 每设置一次Layer Stack，dirtyRegion就会重置为屏幕大小
+ }
+ 
+ // ----------------------------------------------------------------------------
+diff --git a/services/surfaceflinger/DisplayDevice.h b/services/surfaceflinger/DisplayDevice.h
+index d6da422..a71b8e8 100644
+--- a/services/surfaceflinger/DisplayDevice.h
++++ b/services/surfaceflinger/DisplayDevice.h
+@@ -198,7 +198,7 @@ private:
+ 
+     void updateGeometryTransform();
+ 
+-    uint32_t mLayerStack;
++    uint32_t mLayerStack; // 什么概念
+     int mOrientation;
+     Rect mViewport;
+     Rect mFrame;
 diff --git a/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp b/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp
-index 6c86a53..f082255 100644
+index 6c86a53..651697f 100644
 --- a/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp
 +++ b/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp
 @@ -51,7 +51,7 @@ namespace android {
@@ -34,11 +89,12 @@ index 6c86a53..f082255 100644
      mBufferQueue->setDefaultBufferFormat(mHwc.getFormat(disp));
      mBufferQueue->setDefaultBufferSize(mHwc.getWidth(disp),  mHwc.getHeight(disp));
      mBufferQueue->setSynchronousMode(true);
-@@ -107,10 +107,11 @@ status_t FramebufferSurface::nextBuffer(sp<GraphicBuffer>& outBuffer, sp<Fence>&
+@@ -107,10 +107,12 @@ status_t FramebufferSurface::nextBuffer(sp<GraphicBuffer>& outBuffer, sp<Fence>&
  }
  
  // Overrides ConsumerBase::onFrameAvailable(), does not call base class impl.
 -void FramebufferSurface::onFrameAvailable() {
++// 直接重写ConsumerBase的方法，这样就不用设置listener也能收到BufferQueue来的数据
 +void FramebufferSurface::onFrameAvailable() { // 每过来一帧，直接往荧幕上贴
      sp<GraphicBuffer> buf;
      sp<Fence> acquireFence;
@@ -49,7 +105,7 @@ index 6c86a53..f082255 100644
          ALOGE("error latching nnext FramebufferSurface buffer: %s (%d)",
                  strerror(-err), err);
 diff --git a/services/surfaceflinger/DisplayHardware/HWComposer.cpp b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
-index 068fdcd..b64e51f 100644
+index 068fdcd..148f13b 100644
 --- a/services/surfaceflinger/DisplayHardware/HWComposer.cpp
 +++ b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
 @@ -74,7 +74,7 @@ struct HWComposer::cb_context {
@@ -126,7 +182,8 @@ index 068fdcd..b64e51f 100644
 -void HWComposer::vsync(int disp, int64_t timestamp) {
 +void HWComposer::vsync(int disp, int64_t timestamp) { // VSYNC 事件
      ATRACE_INT("VSYNC", ++mVSyncCount&1);
-     mEventHandler.onVSyncReceived(disp, timestamp);
+-    mEventHandler.onVSyncReceived(disp, timestamp);
++    mEventHandler.onVSyncReceived(disp, timestamp); // 硬件
      Mutex::Autolock _l(mLock);
      mLastHwVSync = timestamp;
  }
@@ -172,6 +229,15 @@ index 068fdcd..b64e51f 100644
  }
  
  bool HWComposer::VSyncThread::threadLoop() {
+@@ -1026,7 +1030,7 @@ bool HWComposer::VSyncThread::threadLoop() {
+     } while (err<0 && errno == EINTR);
+ 
+     if (err == 0) {
+-        mHwc.mEventHandler.onVSyncReceived(0, next_vsync);
++        mHwc.mEventHandler.onVSyncReceived(0, next_vsync); // 软件
+     }
+ 
+     return true;
 diff --git a/services/surfaceflinger/DisplayHardware/HWComposer.h b/services/surfaceflinger/DisplayHardware/HWComposer.h
 index 7c67407..2b1fa2f 100644
 --- a/services/surfaceflinger/DisplayHardware/HWComposer.h
@@ -204,42 +270,283 @@ index 7c67407..2b1fa2f 100644
      // mLists[i>0] can be NULL. that display is to be ignored
      struct hwc_display_contents_1*  mLists[MAX_DISPLAYS];
 diff --git a/services/surfaceflinger/EventThread.cpp b/services/surfaceflinger/EventThread.cpp
-index edb9fa5..c82f248 100644
+index edb9fa5..5c6a5e2 100644
 --- a/services/surfaceflinger/EventThread.cpp
 +++ b/services/surfaceflinger/EventThread.cpp
-@@ -86,7 +86,7 @@ void EventThread::setVsyncRate(uint32_t count,
+@@ -41,7 +41,7 @@ EventThread::EventThread(const sp<SurfaceFlinger>& flinger)
+       mUseSoftwareVSync(false),
+       mDebugVsyncEnabled(false) {
+ 
+-    for (int32_t i=0 ; i<HWC_DISPLAY_TYPES_SUPPORTED ; i++) {
++    for (int32_t i = 0; i < HWC_DISPLAY_TYPES_SUPPORTED; i++) {
+         mVSyncEvent[i].header.type = DisplayEventReceiver::DISPLAY_EVENT_VSYNC;
+         mVSyncEvent[i].header.id = 0;
+         mVSyncEvent[i].header.timestamp = 0;
+@@ -50,14 +50,14 @@ EventThread::EventThread(const sp<SurfaceFlinger>& flinger)
+ }
+ 
+ void EventThread::onFirstRef() {
+-    run("EventThread", PRIORITY_URGENT_DISPLAY + PRIORITY_MORE_FAVORABLE);
++    run("EventThread", PRIORITY_URGENT_DISPLAY + PRIORITY_MORE_FAVORABLE); // 第一次引用的时候开始运行
+ }
+ 
+ sp<EventThread::Connection> EventThread::createEventConnection() const {
+     return new Connection(const_cast<EventThread*>(this));
+ }
+ 
+-status_t EventThread::registerDisplayEventConnection(
++status_t EventThread::registerDisplayEventConnection( // 每个Connection被调用一次，但是目前可能会有很多Connection连接过来，很多侦测VSYNC
+         const sp<EventThread::Connection>& connection) {
+     Mutex::Autolock _l(mLock);
+     mDisplayEventConnections.add(connection);
+@@ -75,7 +75,7 @@ void EventThread::setVsyncRate(uint32_t count,
+         const sp<EventThread::Connection>& connection) {
+     if (int32_t(count) >= 0) { // server must protect against bad params
+         Mutex::Autolock _l(mLock);
+-        const int32_t new_count = (count == 0) ? -1 : count;
++        const int32_t new_count = (count == 0) ? -1 : count; // 0 没有事件返回
+         if (connection->count != new_count) {
+             connection->count = new_count;
+             mCondition.broadcast();
+@@ -86,8 +86,8 @@ void EventThread::setVsyncRate(uint32_t count,
  void EventThread::requestNextVsync(
          const sp<EventThread::Connection>& connection) {
      Mutex::Autolock _l(mLock);
 -    if (connection->count < 0) {
-+    if (connection->count < 0) { // 如果是大于0就表示continuous，所以这个方法就不需要作用
-         connection->count = 0;
+-        connection->count = 0;
++    if (connection->count < 0) { // 如果是大于等于0就表示continuous，所以这个方法就不需要作用
++        connection->count = 0; // -1是个表示要requestNextVsync操作有返回的状态，所以这里有进行转换
          mCondition.broadcast();
      }
-@@ -364,7 +364,7 @@ void EventThread::Connection::setVsyncRate(uint32_t count) {
+ }
+@@ -111,7 +111,7 @@ void EventThread::onScreenAcquired() {
+ }
+ 
+ 
+-void EventThread::onVSyncReceived(int type, nsecs_t timestamp) {
++void EventThread::onVSyncReceived(int type, nsecs_t timestamp) { // 不管是硬件还是软件触发的VSYNC事件都会到这里
+     ALOGE_IF(type >= HWC_DISPLAY_TYPES_SUPPORTED,
+             "received event for an invalid display (id=%d)", type);
+ 
+@@ -119,7 +119,7 @@ void EventThread::onVSyncReceived(int type, nsecs_t timestamp) {
+     if (type < HWC_DISPLAY_TYPES_SUPPORTED) {
+         mVSyncEvent[type].header.type = DisplayEventReceiver::DISPLAY_EVENT_VSYNC;
+         mVSyncEvent[type].header.id = type;
+-        mVSyncEvent[type].header.timestamp = timestamp;
++        mVSyncEvent[type].header.timestamp = timestamp; // 不为0就表示有一个VSYNC事件过来了，并且type会直到是哪个display过来的
+         mVSyncEvent[type].vsync.count++;
+         mCondition.broadcast();
+     }
+@@ -143,15 +143,17 @@ void EventThread::onHotplugReceived(int type, bool connected) {
+ 
+ bool EventThread::threadLoop() {
+     DisplayEventReceiver::Event event;
+-    Vector< sp<EventThread::Connection> > signalConnections;
+-    signalConnections = waitForEvent(&event);
++    Vector< sp<EventThread::Connection> > signalConnections; // 比如会有多个组件或者应用注册这个Connection
++    signalConnections = waitForEvent(&event); // 获取到一个Evente(vsync/hotplug)
+ 
+     // dispatch events to listeners...
+-    const size_t count = signalConnections.size();
+-    for (size_t i=0 ; i<count ; i++) {
++    const size_t count = signalConnections.size(); // 有多少路Layer/Display连接过来？
++												   // 如果每路都是对不同的Event感兴趣怎么办？
++    for (size_t i = 0 ; i < count ; i++) {
+         const sp<Connection>& conn(signalConnections[i]);
+         // now see if we still need to report this event
+-        status_t err = conn->postEvent(event);
++        status_t err = conn->postEvent(event); // 通过BitTube把收到的Event散播出去，每次就一个Event，如果有多个display和不同的event
++											   // 岂不很繁忙？
+         if (err == -EAGAIN || err == -EWOULDBLOCK) {
+             // The destination doesn't accept events anymore, it's probably
+             // full. For now, we just drop the events on the floor.
+@@ -167,13 +169,21 @@ bool EventThread::threadLoop() {
+             removeDisplayEventConnection(signalConnections[i]);
+         }
+     }
++    
++    // Derived class must implement threadLoop(). The thread starts its life
++    // here. There are two ways of using the Thread object:
++    // 1) loop: if threadLoop() returns true, it will be called again if
++    //          requestExit() wasn't called.
++    // 2) once: if threadLoop() returns false, the thread will exit upon return.
++    // virtual bool        threadLoop() = 0;
++
+     return true;
+ }
+ 
+ // This will return when (1) a vsync event has been received, and (2) there was
+ // at least one connection interested in receiving it when we started waiting.
+ Vector< sp<EventThread::Connection> > EventThread::waitForEvent(
+-        DisplayEventReceiver::Event* event)
++        DisplayEventReceiver::Event* event) // 这个东西会block住
+ {
+     Mutex::Autolock _l(mLock);
+     Vector< sp<EventThread::Connection> > signalConnections;
+@@ -182,10 +192,10 @@ Vector< sp<EventThread::Connection> > EventThread::waitForEvent(
+         bool eventPending = false;
+         bool waitForVSync = false;
+ 
+-        size_t vsyncCount = 0;
++        size_t vsyncCount = 0; // 回来的VSYNC有多少
+         nsecs_t timestamp = 0;
+-        for (int32_t i=0 ; i<HWC_DISPLAY_TYPES_SUPPORTED ; i++) {
+-            timestamp = mVSyncEvent[i].header.timestamp;
++        for (int32_t i = 0; i < HWC_DISPLAY_TYPES_SUPPORTED; i++) {
++            timestamp = mVSyncEvent[i].header.timestamp; // timestamp会被新的事件的timestamp给覆盖掉
+             if (timestamp) {
+                 // we have a vsync event to dispatch
+                 *event = mVSyncEvent[i];
+@@ -197,17 +207,17 @@ Vector< sp<EventThread::Connection> > EventThread::waitForEvent(
+ 
+         if (!timestamp) {
+             // no vsync event, see if there are some other event
+-            eventPending = !mPendingEvents.isEmpty();
++            eventPending = !mPendingEvents.isEmpty(); // 目前这里主要就是HOT-PLUG事件
+             if (eventPending) {
+                 // we have some other event to dispatch
+-                *event = mPendingEvents[0];
++                *event = mPendingEvents[0]; // Good, we got one finally
+                 mPendingEvents.removeAt(0);
+             }
+         }
+ 
+         // find out connections waiting for events
+-        size_t count = mDisplayEventConnections.size();
+-        for (size_t i=0 ; i<count ; i++) {
++        size_t count = mDisplayEventConnections.size(); // 多个请求display事件的连接
++        for (size_t i = 0; i < count; i++) {
+             sp<Connection> connection(mDisplayEventConnections[i].promote());
+             if (connection != NULL) {
+                 bool added = false;
+@@ -224,17 +234,20 @@ Vector< sp<EventThread::Connection> > EventThread::waitForEvent(
+                             signalConnections.add(connection);
+                             added = true;
+                         } else if (connection->count == 1 ||
+-                                (vsyncCount % connection->count) == 0) {
++                                (vsyncCount % connection->count) == 0) { // 这个vsyncCount什么意义？ connection->count可能很大吗？
++																		 // 0 / 5
++																		 // 这是相对于已有的VSYNC比较的，比如每间隔5个VSYNC返回一个
++																		 // 给客户端， 1就是每个都返回
+                             // continuous event, and time to report it
+                             signalConnections.add(connection);
+                             added = true;
+                         }
+                     }
+-                }
++                } // 针对-1的情况，都不触发，如果变成0了，肯定是有人执行了requestNextVsync
+ 
+-                if (eventPending && !timestamp && !added) {
++                if (eventPending && !timestamp && !added) { // 没有VSYNC，但是有其他事件
+                     // we don't have a vsync event to process
+-                    // (timestamp==0), but we have some pending
++                    // (timestamp == 0), but we have some pending
+                     // messages.
+                     signalConnections.add(connection);
+                 }
+@@ -242,12 +255,12 @@ Vector< sp<EventThread::Connection> > EventThread::waitForEvent(
+                 // we couldn't promote this reference, the connection has
+                 // died, so clean-up!
+                 mDisplayEventConnections.removeAt(i);
+-                --i; --count;
++                --i; --count; // Good
+             }
+         }
+ 
+         // Here we figure out if we need to enable or disable vsyncs
+-        if (timestamp && !waitForVSync) {
++        if (timestamp && !waitForVSync) { // Cool，没有人请求就不用report，但是目前看来至少有一个吧，就是我们SurfaceFlinger用的
+             // we received a VSYNC but we have no clients
+             // don't report it, and disable VSYNC events
+             disableVSyncLocked();
+@@ -258,7 +271,7 @@ Vector< sp<EventThread::Connection> > EventThread::waitForEvent(
+             // at the vsync rate, e.g. 60fps.  If we can accurately
+             // track the current state we could avoid making this call
+             // so often.)
+-            enableVSyncLocked();
++            enableVSyncLocked(); // 这个是同步的吗？
+         }
+ 
+         // note: !timestamp implies signalConnections.isEmpty(), because we
+@@ -277,13 +290,14 @@ Vector< sp<EventThread::Connection> > EventThread::waitForEvent(
+                 // use a (long) timeout when waiting for h/w vsync, and
+                 // generate fake events when necessary.
+                 bool softwareSync = mUseSoftwareVSync;
+-                nsecs_t timeout = softwareSync ? ms2ns(16) : ms2ns(1000);
++                nsecs_t timeout = softwareSync ? ms2ns(16) : ms2ns(1000); // 如果DRV有bug，我们还是可以继续进行，只是时间不准
+                 if (mCondition.waitRelative(mLock, timeout) == TIMED_OUT) {
+                     if (!softwareSync) {
+                         ALOGW("Timed out waiting for hw vsync; faking it");
+                     }
+                     // FIXME: how do we decide which display id the fake
+                     // vsync came from ?
++					// 好问题
+                     mVSyncEvent[0].header.type = DisplayEventReceiver::DISPLAY_EVENT_VSYNC;
+                     mVSyncEvent[0].header.id = HWC_DISPLAY_PRIMARY;
+                     mVSyncEvent[0].header.timestamp = systemTime(SYSTEM_TIME_MONOTONIC);
+@@ -294,7 +308,7 @@ Vector< sp<EventThread::Connection> > EventThread::waitForEvent(
+                 // h/w vsync should be disabled, so this will wait until we
+                 // get a new connection, or an existing connection becomes
+                 // interested in receiving vsync again.
+-                mCondition.wait(mLock);
++                mCondition.wait(mLock); // 没有人对VSYNC感兴趣，所以我们需要关闭硬件VSYNC，然后在此睡眠
+             }
+         }
+     } while (signalConnections.isEmpty());
+@@ -341,7 +355,7 @@ void EventThread::dump(String8& result, char* buffer, size_t SIZE) const {
+ 
+ EventThread::Connection::Connection(
+         const sp<EventThread>& eventThread)
+-    : count(-1), mEventThread(eventThread), mChannel(new BitTube())
++    : count(-1), mEventThread(eventThread), mChannel(new BitTube()) // 服务端创建
+ {
+ }
+ 
+@@ -364,12 +378,12 @@ void EventThread::Connection::setVsyncRate(uint32_t count) {
  }
  
  void EventThread::Connection::requestNextVsync() {
 -    mEventThread->requestNextVsync(this);
-+    mEventThread->requestNextVsync(this); // 如果VsyncRate大于0，这个方法就不起作用
++    mEventThread->requestNextVsync(this); // 如果VsyncRate大于等于0，这个方法就不起作用
  }
  
  status_t EventThread::Connection::postEvent(
+         const DisplayEventReceiver::Event& event) {
+-    ssize_t size = DisplayEventReceiver::sendEvents(mChannel, &event, 1);
++    ssize_t size = DisplayEventReceiver::sendEvents(mChannel, &event, 1); // 看这里，看这里
+     return size < 0 ? status_t(size) : status_t(NO_ERROR);
+ }
+ 
 diff --git a/services/surfaceflinger/EventThread.h b/services/surfaceflinger/EventThread.h
-index 1934f98..3c92b94 100644
+index 1934f98..d6bfb7b 100644
 --- a/services/surfaceflinger/EventThread.h
 +++ b/services/surfaceflinger/EventThread.h
-@@ -49,7 +49,7 @@ class EventThread : public Thread {
+@@ -49,12 +49,12 @@ class EventThread : public Thread {
          // count >= 1 : continuous event. count is the vsync rate
          // count == 0 : one-shot event that has not fired
          // count ==-1 : one-shot event that fired this round / disabled
 -        int32_t count;
-+        int32_t count; // 这里
++        int32_t count; // 这里 也就是说-1的情况是需要requestNextVsync触发的？
  
      private:
          virtual ~Connection();
+         virtual void onFirstRef();
+-        virtual sp<BitTube> getDataChannel() const;
++        virtual sp<BitTube> getDataChannel() const; // 客户端会用到
+         virtual void setVsyncRate(uint32_t count);
+         virtual void requestNextVsync();    // asynchronous
+         sp<EventThread> const mEventThread;
+@@ -102,7 +102,7 @@ private:
+     mutable Condition mCondition;
+ 
+     // protected by mLock
+-    SortedVector< wp<Connection> > mDisplayEventConnections;
++    SortedVector< wp<Connection> > mDisplayEventConnections; // 这个为什么是弱引用，因为它不掌管生死
+     Vector< DisplayEventReceiver::Event > mPendingEvents;
+     DisplayEventReceiver::Event mVSyncEvent[HWC_DISPLAY_TYPES_SUPPORTED];
+     bool mUseSoftwareVSync;
 diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
-index 7edbdc5..7008950 100644
+index 7edbdc5..c2e09f4 100644
 --- a/services/surfaceflinger/Layer.cpp
 +++ b/services/surfaceflinger/Layer.cpp
 @@ -67,7 +67,7 @@ Layer::Layer(SurfaceFlinger* flinger, const sp<Client>& client)
@@ -251,22 +558,38 @@ index 7edbdc5..7008950 100644
  }
  
  void Layer::onLayerDisplayed(const sp<const DisplayDevice>& hw,
-@@ -95,7 +95,13 @@ void Layer::onFirstRef()
+@@ -95,19 +95,26 @@ void Layer::onFirstRef()
      };
  
      // Creates a custom BufferQueue for SurfaceTexture to use
 -    sp<BufferQueue> bq = new SurfaceTextureLayer();
-+    sp<BufferQueue> bq = new SurfaceTextureLayer(); // 谁来往里面填数据？
+-    mSurfaceTexture = new SurfaceTexture(mTextureName, true,
++    sp<BufferQueue> bq = new SurfaceTextureLayer(); // 谁来往里面填数据？ 传出去的ANativeWindow  通过BSurface->getSurfaceTexture
 +
 +    /**
 +	 * SurfaceTexture(GLuint tex, bool allowSynchronousMode = true,
 +     *         GLenum texTarget = GL_TEXTURE_EXTERNAL_OES, bool useFenceSync = true,
 +     *         const sp<BufferQueue> &bufferQueue = 0);
 +	 */
-     mSurfaceTexture = new SurfaceTexture(mTextureName, true,
++    mSurfaceTexture = new SurfaceTexture(mTextureName, true, // SurfaceTexture(ConsumerBase)
              GL_TEXTURE_EXTERNAL_OES, false, bq);
  
-@@ -116,12 +122,13 @@ void Layer::onFirstRef()
+     mSurfaceTexture->setConsumerUsageBits(getEffectiveUsage(0));
+-    mSurfaceTexture->setFrameAvailableListener(new FrameQueuedListener(this));
++    mSurfaceTexture->setFrameAvailableListener(new FrameQueuedListener(this)); // 只有这里创建的SurfaceTexture才会有Callback回来
++    																		    // HW创建的跟这里没有关系
+     mSurfaceTexture->setSynchronousMode(true);
+ 
+ #ifdef TARGET_DISABLE_TRIPLE_BUFFERING
+ #warning "disabling triple buffering"
+     mSurfaceTexture->setDefaultMaxBufferCount(2);
+ #else
+-    mSurfaceTexture->setDefaultMaxBufferCount(3);
++    mSurfaceTexture->setDefaultMaxBufferCount(3); // 怎么样看出来这就是triple buffer吗？从获取buffer的地方可以？
+ #endif
+ 
+     const sp<const DisplayDevice> hw(mFlinger->getDefaultDisplayDevice());
+@@ -116,12 +123,13 @@ void Layer::onFirstRef()
  
  Layer::~Layer()
  {
@@ -281,7 +604,7 @@ index 7edbdc5..7008950 100644
  }
  
  // called with SurfaceFlinger::mStateLock as soon as the layer is entered
-@@ -140,7 +147,7 @@ sp<ISurface> Layer::createSurface()
+@@ -140,7 +148,7 @@ sp<ISurface> Layer::createSurface()
  {
      class BSurface : public BnSurface, public LayerCleaner {
          wp<const Layer> mOwner;
@@ -290,7 +613,95 @@ index 7edbdc5..7008950 100644
              sp<ISurfaceTexture> res;
              sp<const Layer> that( mOwner.promote() );
              if (that != NULL) {
-@@ -780,6 +787,7 @@ void Layer::updateTransformHint(const sp<const DisplayDevice>& hw) const {
+@@ -326,16 +334,16 @@ void Layer::onDraw(const sp<const DisplayDevice>& hw, const Region& clip) const
+         const SurfaceFlinger::LayerVector& drawingLayers(
+                 mFlinger->mDrawingState.layersSortedByZ);
+         const size_t count = drawingLayers.size();
+-        for (size_t i=0 ; i<count ; ++i) {
++        for (size_t i = 0; i < count; ++i) {
+             const sp<LayerBase>& layer(drawingLayers[i]);
+             if (layer.get() == static_cast<LayerBase const*>(this))
+-                break;
+-            under.orSelf( hw->getTransform().transform(layer->visibleRegion) );
++                break; // 如果是自己，直接跳出
++            under.orSelf(hw->getTransform().transform(layer->visibleRegion));
+         }
+-        // if not everything below us is covered, we plug the holes!
++        // if not everything below us is covered, we plug the holes! // 塞住
+         Region holes(clip.subtract(under));
+-        if (!holes.isEmpty()) {
+-            clearWithOpenGL(hw, holes, 0, 0, 0, 1);
++        if (!holes.isEmpty()) { // 表示什么意思？
++            clearWithOpenGL(hw, holes, 0, 0, 0, 1); // black并且不透名
+         }
+         return;
+     }
+@@ -399,7 +407,7 @@ bool Layer::getOpacityForFormat(uint32_t format)
+         return true;
+     }
+     PixelFormatInfo info;
+-    status_t err = getPixelFormatInfo(PixelFormat(format), &info);
++    status_t err = getPixelFormatInfo(PixelFormat(format), &info); // 这个方法是哪里来的？
+     // in case of error (unknown format), we assume no blending
+     return (err || info.h_alpha <= info.l_alpha);
+ }
+@@ -476,7 +484,7 @@ uint32_t Layer::doTransaction(uint32_t flags)
+         // record the new size, form this point on, when the client request
+         // a buffer, it'll get the new size.
+         mSurfaceTexture->setDefaultBufferSize(
+-                temp.requested.w, temp.requested.h);
++                temp.requested.w, temp.requested.h); // 重新设置buffer大小
+     }
+ 
+     if (!isFixedSize()) {
+@@ -552,10 +560,10 @@ Region Layer::latchBuffer(bool& recomputeVisibleRegions)
+ 
+         // Capture the old state of the layer for comparisons later
+         const bool oldOpacity = isOpaque();
+-        sp<GraphicBuffer> oldActiveBuffer = mActiveBuffer;
++        sp<GraphicBuffer> oldActiveBuffer = mActiveBuffer; // 如果oldActiveBuffer为NULL，就表示这是收到的第一个frame
+ 
+         // signal another event if we have more frames pending
+-        if (android_atomic_dec(&mQueuedFrames) > 1) {
++        if (android_atomic_dec(&mQueuedFrames) > 1) { // 这个好
+             mFlinger->signalLayerUpdate();
+         }
+ 
+@@ -580,13 +588,13 @@ Region Layer::latchBuffer(bool& recomputeVisibleRegions)
+ 
+                 // check that we received a buffer of the right size
+                 // (Take the buffer's orientation into account)
+-                if (item.mTransform & Transform::ROT_90) {
++                if (item.mTransform & Transform::ROT_90) { // why?
+                     swap(bufWidth, bufHeight);
+                 }
+ 
+ 
+                 bool isFixedSize = item.mScalingMode != NATIVE_WINDOW_SCALING_MODE_FREEZE;
+-                if (front.active != front.requested) {
++                if (front.active != front.requested) { // 也就是外面就已经确定了？
+ 
+                     if (isFixedSize ||
+                             (bufWidth == front.requested.w &&
+@@ -642,7 +650,7 @@ Region Layer::latchBuffer(bool& recomputeVisibleRegions)
+         };
+ 
+ 
+-        Reject r(mDrawingState, currentState(), recomputeVisibleRegions);
++        Reject r(mDrawingState, currentState(), recomputeVisibleRegions); // latchBuffer 参数
+ 
+         if (mSurfaceTexture->updateTexImage(&r, true) < NO_ERROR) {
+             // something happened!
+@@ -651,7 +659,7 @@ Region Layer::latchBuffer(bool& recomputeVisibleRegions)
+         }
+ 
+         // update the active buffer
+-        mActiveBuffer = mSurfaceTexture->getCurrentBuffer();
++        mActiveBuffer = mSurfaceTexture->getCurrentBuffer(); // current buffer updated after updateTexImage called
+         if (mActiveBuffer == NULL) {
+             // this can only happen if the very first buffer was rejected.
+             return outDirtyRegion;
+@@ -780,6 +788,7 @@ void Layer::updateTransformHint(const sp<const DisplayDevice>& hw) const {
              orientation = 0;
          }
      }
@@ -299,9 +710,27 @@ index 7edbdc5..7008950 100644
  }
  
 diff --git a/services/surfaceflinger/LayerBase.cpp b/services/surfaceflinger/LayerBase.cpp
-index 9b03c74..f3bc703 100644
+index 9b03c74..9e865a7 100644
 --- a/services/surfaceflinger/LayerBase.cpp
 +++ b/services/surfaceflinger/LayerBase.cpp
+@@ -84,7 +84,7 @@ void LayerBase::initStates(uint32_t w, uint32_t h, uint32_t flags)
+     mCurrentState.requested = mCurrentState.active;
+ 
+     // drawing state & current state are identical
+-    mDrawingState = mCurrentState;
++    mDrawingState = mCurrentState; // 既然一样，这是要闹哪样？
+ }
+ 
+ bool LayerBase::needsFiltering(const sp<const DisplayDevice>& hw) const {
+@@ -101,7 +101,7 @@ void LayerBase::forceVisibilityTransaction() {
+     requestTransaction();
+ }
+ bool LayerBase::requestTransaction() {
+-    int32_t old = setTransactionFlags(eTransactionNeeded);
++    int32_t old = setTransactionFlags(eTransactionNeeded); // SurfaceFlinger.h
+     return ((old & eTransactionNeeded) == 0);
+ }
+ uint32_t LayerBase::getTransactionFlags(uint32_t flags) {
 @@ -506,7 +506,7 @@ LayerBaseClient::~LayerBaseClient()
  sp<ISurface> LayerBaseClient::createSurface()
  {
@@ -312,9 +741,20 @@ index 9b03c74..f3bc703 100644
          BSurface(const sp<SurfaceFlinger>& flinger,
                  const sp<LayerBaseClient>& layer)
 diff --git a/services/surfaceflinger/LayerBase.h b/services/surfaceflinger/LayerBase.h
-index 4d5a5b0..d75b80c 100644
+index 4d5a5b0..13a0691 100644
 --- a/services/surfaceflinger/LayerBase.h
 +++ b/services/surfaceflinger/LayerBase.h
+@@ -76,8 +76,8 @@ public:
+             };
+ 
+             struct State {
+-                Geometry        active;
+-                Geometry        requested;
++                Geometry        active; // 包含 w/h/crop
++                Geometry        requested; //
+                 uint32_t        z;
+                 uint32_t        layerStack;
+                 uint8_t         alpha;
 @@ -119,7 +119,7 @@ public:
              void commitTransaction();
              bool requestTransaction();
@@ -325,19 +765,42 @@ index 4d5a5b0..d75b80c 100644
              uint32_t setTransactionFlags(uint32_t flags);
  
 diff --git a/services/surfaceflinger/MessageQueue.cpp b/services/surfaceflinger/MessageQueue.cpp
-index 3f77f74..87d1c8a 100644
+index 3f77f74..16efa7f 100644
 --- a/services/surfaceflinger/MessageQueue.cpp
 +++ b/services/surfaceflinger/MessageQueue.cpp
-@@ -93,7 +93,7 @@ void MessageQueue::init(const sp<SurfaceFlinger>& flinger)
- void MessageQueue::setEventThread(const sp<EventThread>& eventThread)
+@@ -65,11 +65,11 @@ void MessageQueue::Handler::handleMessage(const Message& message) {
+     switch (message.what) {
+         case INVALIDATE:
+             android_atomic_and(~eventMaskInvalidate, &mEventMask);
+-            mQueue.mFlinger->onMessageReceived(message.what);
++            mQueue.mFlinger->onMessageReceived(message.what); //
+             break;
+         case REFRESH:
+             android_atomic_and(~eventMaskRefresh, &mEventMask);
+-            mQueue.mFlinger->onMessageReceived(message.what);
++            mQueue.mFlinger->onMessageReceived(message.what); //
+             break;
+     }
+ }
+@@ -90,13 +90,13 @@ void MessageQueue::init(const sp<SurfaceFlinger>& flinger)
+     mHandler = new Handler(*this);
+ }
+ 
+-void MessageQueue::setEventThread(const sp<EventThread>& eventThread)
++void MessageQueue::setEventThread(const sp<EventThread>& eventThread) // 只有在SurfaceFlinger当中调用一次
  {
      mEventThread = eventThread;
 -    mEvents = eventThread->createEventConnection();
+-    mEventTube = mEvents->getDataChannel();
 +    mEvents = eventThread->createEventConnection(); // 这里 IDisplayEventConnection
-     mEventTube = mEvents->getDataChannel();
++    mEventTube = mEvents->getDataChannel(); // BitTube实在EventThread创建的
      mLooper->addFd(mEventTube->getFd(), 0, ALOOPER_EVENT_INPUT,
-             MessageQueue::cb_eventReceiver, this);
-@@ -147,15 +147,15 @@ void MessageQueue::invalidate() {
+-            MessageQueue::cb_eventReceiver, this);
++            MessageQueue::cb_eventReceiver, this); // 这个FD是干什么的？ mReceiveFd，听这个FD上的事件
+ }
+ 
+ void MessageQueue::waitMessage() {
+@@ -147,19 +147,19 @@ void MessageQueue::invalidate() {
  #if INVALIDATE_ON_VSYNC
      mEvents->requestNextVsync();
  #else
@@ -356,8 +819,47 @@ index 3f77f74..87d1c8a 100644
  #endif
  }
  
+-int MessageQueue::cb_eventReceiver(int fd, int events, void* data) {
++int MessageQueue::cb_eventReceiver(int fd, int events, void* data) { // BitTube的socket回调
+     MessageQueue* queue = reinterpret_cast<MessageQueue *>(data);
+     return queue->eventReceiver(fd, events);
+ }
+@@ -168,12 +168,12 @@ int MessageQueue::eventReceiver(int fd, int events) {
+     ssize_t n;
+     DisplayEventReceiver::Event buffer[8];
+     while ((n = DisplayEventReceiver::getEvents(mEventTube, buffer, 8)) > 0) {
+-        for (int i=0 ; i<n ; i++) {
+-            if (buffer[i].header.type == DisplayEventReceiver::DISPLAY_EVENT_VSYNC) {
++        for (int i = 0 ; i < n ; i++) {
++            if (buffer[i].header.type == DisplayEventReceiver::DISPLAY_EVENT_VSYNC) { // 如果是VSYNC事件
+ #if INVALIDATE_ON_VSYNC
+-                mHandler->dispatchInvalidate();
++                mHandler->dispatchInvalidate(); // Handler(MessageHandler)
+ #else
+-                mHandler->dispatchRefresh();
++                mHandler->dispatchRefresh(); // Handler(MessageHandler)
+ #endif
+                 break;
+             }
+diff --git a/services/surfaceflinger/MessageQueue.h b/services/surfaceflinger/MessageQueue.h
+index 710b2c2..991e8d8 100644
+--- a/services/surfaceflinger/MessageQueue.h
++++ b/services/surfaceflinger/MessageQueue.h
+@@ -81,10 +81,10 @@ class MessageQueue {
+     sp<EventThread> mEventThread;
+     sp<IDisplayEventConnection> mEvents;
+     sp<BitTube> mEventTube;
+-    sp<Handler> mHandler;
++    sp<Handler> mHandler; // MessageHandler
+ 
+ 
+-    static int cb_eventReceiver(int fd, int events, void* data);
++    static int cb_eventReceiver(int fd, int events, void* data); // 供ALooper使用
+     int eventReceiver(int fd, int events);
+ 
+ public:
 diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
-index 9afa4c1..036812f 100644
+index 9afa4c1..112470d 100644
 --- a/services/surfaceflinger/SurfaceFlinger.cpp
 +++ b/services/surfaceflinger/SurfaceFlinger.cpp
 @@ -186,7 +186,7 @@ sp<IBinder> SurfaceFlinger::createDisplay(const String8& displayName,
@@ -369,12 +871,18 @@ index 9afa4c1..036812f 100644
  
      return token;
  }
-@@ -198,7 +198,7 @@ void SurfaceFlinger::createBuiltinDisplayLocked(DisplayDevice::DisplayType type)
-     DisplayDeviceState info(type);
+@@ -194,11 +194,11 @@ sp<IBinder> SurfaceFlinger::createDisplay(const String8& displayName,
+ void SurfaceFlinger::createBuiltinDisplayLocked(DisplayDevice::DisplayType type) {
+     ALOGW_IF(mBuiltinDisplays[type],
+             "Overwriting display token for display type %d", type);
+-    mBuiltinDisplays[type] = new BBinder();
+-    DisplayDeviceState info(type);
++    mBuiltinDisplays[type] = new BBinder(); // sp
++    DisplayDeviceState info(type); // built in device
      // All non-virtual displays are currently considered secure.
      info.isSecure = true;
 -    mCurrentState.displays.add(mBuiltinDisplays[type], info);
-+    mCurrentState.displays.add(mBuiltinDisplays[type], info); // 默认的display
++    mCurrentState.displays.add(mBuiltinDisplays[type], info); // 默认的display // DefaultKeyedVector // wp
  }
  
  sp<IBinder> SurfaceFlinger::getBuiltInDisplay(int32_t id) {
@@ -387,6 +895,15 @@ index 9afa4c1..036812f 100644
  
      const uint16_t protTexData[] = { pack565(0x03, 0x03, 0x03) };
      glGenTextures(1, &mProtectedTexName);
+@@ -467,7 +467,7 @@ void SurfaceFlinger::initializeGL(EGLDisplay display) {
+     ALOGI("GL_MAX_VIEWPORT_DIMS = %d x %d", mMaxViewportDims[0], mMaxViewportDims[1]);
+ }
+ 
+-status_t SurfaceFlinger::readyToRun()
++status_t SurfaceFlinger::readyToRun() // do one-time initializations
+ {
+     ALOGI(  "SurfaceFlinger's main thread ready to run. "
+             "Initializing graphics H/W...");
 @@ -481,7 +481,7 @@ status_t SurfaceFlinger::readyToRun()
      // Initialize the H/W composer object.  There may or may not be an
      // actual hardware composer underneath.
@@ -396,18 +913,21 @@ index 9afa4c1..036812f 100644
  
      // initialize the config and context
      EGLint format = mHwc->getVisualID();
-@@ -491,21 +491,22 @@ status_t SurfaceFlinger::readyToRun()
+@@ -491,21 +491,27 @@ status_t SurfaceFlinger::readyToRun()
      LOG_ALWAYS_FATAL_IF(mEGLContext == EGL_NO_CONTEXT,
              "couldn't create EGLContext");
  
 -    // initialize our non-virtual displays
+-    for (size_t i=0 ; i<DisplayDevice::NUM_DISPLAY_TYPES ; i++) {
 +    // initialize our non-virtual displays // so far may or may not be has 2 in total
-     for (size_t i=0 ; i<DisplayDevice::NUM_DISPLAY_TYPES ; i++) {
++    for (size_t i = 0; i < DisplayDevice::NUM_DISPLAY_TYPES; i++) {
          DisplayDevice::DisplayType type((DisplayDevice::DisplayType)i);
++        // 如果我都不插入显示器，会到这里吗？
          // set-up the displays that are already connected
 -        if (mHwc->isConnected(i) || type==DisplayDevice::DISPLAY_PRIMARY) {
-+        if (mHwc->isConnected(i) || type==DisplayDevice::DISPLAY_PRIMARY) { // 默认 primary display 总是连上的
-+        																	// 通常这里只会一个 primary display 
++        if (mHwc->isConnected(i) || type == DisplayDevice::DISPLAY_PRIMARY) { // 默认 primary display 总是连上的
++        																	  // 通常这里只会一个 primary display
++																			  // 即使不接入显示器，也是会执行这里
              // All non-virtual displays are currently considered secure.
              bool isSecure = true;
              createBuiltinDisplayLocked(type);
@@ -420,11 +940,14 @@ index 9afa4c1..036812f 100644
 +                        static_cast< sp<ISurfaceTexture> >(fbs->getBufferQueue())); // ANativeWindow
              sp<DisplayDevice> hw = new DisplayDevice(this,
 -                    type, isSecure, token, stc, fbs, mEGLConfig);
-+                    type, isSecure, token, stc, fbs, mEGLConfig); // 可是是谁把数据喂给DisplayDevice的呢？
++                    type, isSecure, token, stc /* mNativeWindow */, fbs /* mFramebufferSurface */, mEGLConfig);
++            // 可是是谁喂数据到这个BufferQueue里来的呢？
++            // 可是是谁把数据喂给DisplayDevice的呢？
++            // 难道是EGL？eglCreateWindowSurface
              if (i > DisplayDevice::DISPLAY_PRIMARY) {
                  // FIXME: currently we don't get blank/unblank requests
                  // for displays other than the main display, so we always
-@@ -540,7 +541,7 @@ status_t SurfaceFlinger::readyToRun()
+@@ -540,7 +546,7 @@ status_t SurfaceFlinger::readyToRun()
      mReadyToRunBarrier.open();
  
      // set initial conditions (e.g. unblank default device)
@@ -433,7 +956,7 @@ index 9afa4c1..036812f 100644
  
      // start boot animation
      startBootAnim();
-@@ -727,7 +728,7 @@ bool SurfaceFlinger::threadLoop() {
+@@ -727,7 +733,7 @@ bool SurfaceFlinger::threadLoop() {
      return true;
  }
  
@@ -442,7 +965,61 @@ index 9afa4c1..036812f 100644
      if (mEventThread == NULL) {
          // This is a temporary workaround for b/7145521.  A non-null pointer
          // does not mean EventThread has finished initializing, so this
-@@ -1182,6 +1183,18 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
+@@ -741,7 +747,7 @@ void SurfaceFlinger::onVSyncReceived(int type, nsecs_t timestamp) {
+     }
+ }
+ 
+-void SurfaceFlinger::onHotplugReceived(int type, bool connected) {
++void SurfaceFlinger::onHotplugReceived(int type, bool connected) { // 如果没有显示器，接入进来一个，不会触发，因为主显示器始终是连上的
+     if (mEventThread == NULL) {
+         // This is a temporary workaround for b/7145521.  A non-null pointer
+         // does not mean EventThread has finished initializing, so this
+@@ -890,7 +896,7 @@ void SurfaceFlinger::rebuildLayerStacks() {
+         invalidateHwcGeometry();
+ 
+         const LayerVector& currentLayers(mDrawingState.layersSortedByZ);
+-        for (size_t dpy=0 ; dpy<mDisplays.size() ; dpy++) {
++        for (size_t dpy = 0 ; dpy < mDisplays.size() ; dpy++) {
+             Region opaqueRegion;
+             Region dirtyRegion;
+             Vector< sp<LayerBase> > layersSortedByZ;
+@@ -1075,13 +1081,13 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
+      */
+ 
+     if (transactionFlags & eTraversalNeeded) {
+-        for (size_t i=0 ; i<count ; i++) {
++        for (size_t i = 0 ; i < count ; i++) { // 每层都需要traversal
+             const sp<LayerBase>& layer(currentLayers[i]);
+             uint32_t trFlags = layer->getTransactionFlags(eTransactionNeeded);
+-            if (!trFlags) continue;
++            if (!trFlags) continue; // 不需要transaction
+ 
+-            const uint32_t flags = layer->doTransaction(0);
+-            if (flags & Layer::eVisibleRegion)
++            const uint32_t flags = layer->doTransaction(0); // 更新state，并commit transaction
++            if (flags & Layer::eVisibleRegion) // need to invalidate and recompute the visible regions
+                 mVisibleRegionsDirty = true;
+         }
+     }
+@@ -1105,7 +1111,7 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
+             // (ie: in drawing state but not in current state)
+             // also handle displays that changed
+             // (ie: displays that are in both lists)
+-            for (size_t i=0 ; i<dc ; i++) {
++            for (size_t i = 0 ; i < dc ; i++) {
+                 const ssize_t j = curr.indexOfKey(draw.keyAt(i));
+                 if (j < 0) {
+                     // in drawing state but not in current state
+@@ -1155,7 +1161,7 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
+ 
+             // find displays that were added
+             // (ie: in current state but not in drawing state)
+-            for (size_t i=0 ; i<cc ; i++) {
++            for (size_t i = 0 ; i < cc ; i++) {
+                 if (draw.indexOfKey(curr.keyAt(i)) < 0) {
+                     const DisplayDeviceState& state(curr[i]);
+ 
+@@ -1182,6 +1188,18 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
  
                      const wp<IBinder>& display(curr.keyAt(i));
                      if (stc != NULL) {
@@ -461,7 +1038,75 @@ index 9afa4c1..036812f 100644
                          sp<DisplayDevice> hw = new DisplayDevice(this,
                                  state.type, state.isSecure, display, stc, fbs,
                                  mEGLConfig);
-@@ -1806,7 +1819,7 @@ uint32_t SurfaceFlinger::setDisplayStateLocked(const DisplayState& s)
+@@ -1443,7 +1461,7 @@ void SurfaceFlinger::computeVisibleRegions(
+ 
+ void SurfaceFlinger::invalidateLayerStack(uint32_t layerStack,
+         const Region& dirty) {
+-    for (size_t dpy=0 ; dpy<mDisplays.size() ; dpy++) {
++    for (size_t dpy = 0; dpy < mDisplays.size() ; dpy++) { // 假设只有一个显示器
+         const sp<DisplayDevice>& hw(mDisplays[dpy]);
+         if (hw->getLayerStack() == layerStack) {
+             hw->dirtyRegion.orSelf(dirty);
+@@ -1458,11 +1476,11 @@ void SurfaceFlinger::handlePageFlip()
+     bool visibleRegions = false;
+     const LayerVector& currentLayers(mDrawingState.layersSortedByZ);
+     const size_t count = currentLayers.size();
+-    for (size_t i=0 ; i<count ; i++) {
++    for (size_t i = 0; i < count; i++) {
+         const sp<LayerBase>& layer(currentLayers[i]);
+         const Region dirty(layer->latchBuffer(visibleRegions));
+         const Layer::State& s(layer->drawingState());
+-        invalidateLayerStack(s.layerStack, dirty);
++        invalidateLayerStack(s.layerStack, dirty); // layer stack和display device一样的时候就会合并dirty region
+     }
+ 
+     mVisibleRegionsDirty |= visibleRegions;
+@@ -1655,7 +1673,7 @@ ssize_t SurfaceFlinger::addClientLayer(const sp<Client>& client,
+ 
+     // add this layer to the current state list
+     Mutex::Autolock _l(mStateLock);
+-    mCurrentState.layersSortedByZ.add(lbc);
++    mCurrentState.layersSortedByZ.add(lbc); // LayerVector
+ 
+     return ssize_t(name);
+ }
+@@ -1699,7 +1717,7 @@ status_t SurfaceFlinger::purgatorizeLayer_l(const sp<LayerBase>& layerBase)
+ 
+ uint32_t SurfaceFlinger::peekTransactionFlags(uint32_t flags)
+ {
+-    return android_atomic_release_load(&mTransactionFlags);
++    return android_atomic_release_load(&mTransactionFlags); // 这是什么？
+ }
+ 
+ uint32_t SurfaceFlinger::getTransactionFlags(uint32_t flags)
+@@ -1721,6 +1739,10 @@ void SurfaceFlinger::setTransactionState(
+         const Vector<DisplayState>& displays,
+         uint32_t flags)
+ {
++
++	// 这个方法基本只有从ISurfaceComposer调用过来才会做事情
++	// 客户端会修改Surface的状态，然后会通过setTransactionState调用过来
++
+     ATRACE_CALL();
+     Mutex::Autolock _l(mStateLock);
+     uint32_t transactionFlags = 0;
+@@ -1742,13 +1764,13 @@ void SurfaceFlinger::setTransactionState(
+     }
+ 
+     size_t count = displays.size();
+-    for (size_t i=0 ; i<count ; i++) {
++    for (size_t i = 0 ; i < count ; i++) {
+         const DisplayState& s(displays[i]);
+         transactionFlags |= setDisplayStateLocked(s);
+     }
+ 
+     count = state.size();
+-    for (size_t i=0 ; i<count ; i++) {
++    for (size_t i = 0 ; i < count ; i++) {
+         const ComposerState& s(state[i]);
+         // Here we need to check that the interface we're given is indeed
+         // one of our own. A malicious client could give us a NULL
+@@ -1806,7 +1828,7 @@ uint32_t SurfaceFlinger::setDisplayStateLocked(const DisplayState& s)
          const uint32_t what = s.what;
          if (what & DisplayState::eSurfaceChanged) {
              if (disp.surface->asBinder() != s.surface->asBinder()) {
@@ -470,6 +1115,91 @@ index 9afa4c1..036812f 100644
                  flags |= eDisplayTransactionNeeded;
              }
          }
+@@ -1839,7 +1861,7 @@ uint32_t SurfaceFlinger::setClientStateLocked(
+         const layer_state_t& s)
+ {
+     uint32_t flags = 0;
+-    sp<LayerBaseClient> layer(client->getLayerUser(s.surface));
++    sp<LayerBaseClient> layer(client->getLayerUser(s.surface)); // layer_state_t，这里的surface实际就是SurfaceID
+     if (layer != 0) {
+         const uint32_t what = s.what;
+         if (what & layer_state_t::ePositionChanged) {
+@@ -1930,7 +1952,7 @@ sp<ISurface> SurfaceFlinger::createLayer(
+     if (layer != 0) {
+         layer->initStates(w, h, flags);
+         layer->setName(name);
+-        ssize_t token = addClientLayer(client, layer);
++        ssize_t token = addClientLayer(client, layer); // 添加到LayerVector mCurrentState.layersSortedByZ
+         surfaceHandle = layer->getSurface();
+         if (surfaceHandle != 0) {
+             params->token = token;
+@@ -2042,7 +2064,7 @@ status_t SurfaceFlinger::onLayerDestroyed(const wp<LayerBaseClient>& layer)
+ 
+ void SurfaceFlinger::onInitializeDisplays() {
+     // reset screen orientation
+-    Vector<ComposerState> state;
++    Vector<ComposerState> state; // 这个是空的丫
+     Vector<DisplayState> displays;
+     DisplayState d;
+     d.what = DisplayState::eDisplayProjectionChanged;
+@@ -2051,7 +2073,7 @@ void SurfaceFlinger::onInitializeDisplays() {
+     d.frame.makeInvalid();
+     d.viewport.makeInvalid();
+     displays.add(d);
+-    setTransactionState(state, displays, 0);
++    setTransactionState(state, displays, 0); // 初始化的调用实际不做什么
+     onScreenAcquired(getDefaultDisplayDevice());
+ }
+ 
+@@ -2777,7 +2799,7 @@ status_t SurfaceFlinger::captureScreen(const sp<IBinder>& display,
+         sp<IMemoryHeap>* heap,
+         uint32_t* width, uint32_t* height, PixelFormat* format,
+         uint32_t sw, uint32_t sh,
+-        uint32_t minLayerZ, uint32_t maxLayerZ)
++        uint32_t minLayerZ, uint32_t maxLayerZ) // 看这里
+ {
+     if (CC_UNLIKELY(display == 0))
+         return BAD_VALUE;
+@@ -2864,7 +2886,7 @@ SurfaceFlinger::DisplayDeviceState::DisplayDeviceState()
+ }
+ 
+ SurfaceFlinger::DisplayDeviceState::DisplayDeviceState(DisplayDevice::DisplayType type)
+-    : type(type), layerStack(0), orientation(0) {
++    : type(type), layerStack(0), orientation(0) { // 根据DisplayType构建一个DisplayDeviceState
+     viewport.makeInvalid();
+     frame.makeInvalid();
+ }
+diff --git a/services/surfaceflinger/SurfaceFlinger.h b/services/surfaceflinger/SurfaceFlinger.h
+index 1b549e4..91219a8 100644
+--- a/services/surfaceflinger/SurfaceFlinger.h
++++ b/services/surfaceflinger/SurfaceFlinger.h
+@@ -401,7 +401,7 @@ private:
+ 
+     // access must be protected by mStateLock
+     mutable Mutex mStateLock;
+-    State mCurrentState;
++    State mCurrentState; // 包含Layer(s)和Display(s)的一个普通结构，似乎没有对应关系
+     volatile int32_t mTransactionFlags;
+     Condition mTransactionCV;
+     SortedVector<sp<LayerBase> > mLayerPurgatory;
+@@ -425,7 +425,7 @@ private:
+     EGLContext mEGLContext;
+     EGLConfig mEGLConfig;
+     EGLDisplay mEGLDisplay;
+-    sp<IBinder> mBuiltinDisplays[DisplayDevice::NUM_DISPLAY_TYPES];
++    sp<IBinder> mBuiltinDisplays[DisplayDevice::NUM_DISPLAY_TYPES]; // 这个只是主键 only key
+ 
+     // Can only accessed from the main thread, these members
+     // don't need synchronization
+@@ -435,7 +435,7 @@ private:
+ 
+     // this may only be written from the main thread with mStateLock held
+     // it may be read from other threads with mStateLock held
+-    DefaultKeyedVector< wp<IBinder>, sp<DisplayDevice> > mDisplays;
++    DefaultKeyedVector< wp<IBinder>, sp<DisplayDevice> > mDisplays; // key-value paired
+ 
+     // don't use a lock for these, we don't care
+     int mDebugRegion;
 diff --git a/services/surfaceflinger/SurfaceTextureLayer.cpp b/services/surfaceflinger/SurfaceTextureLayer.cpp
 index 0b638b4..bb3ac8a 100644
 --- a/services/surfaceflinger/SurfaceTextureLayer.cpp

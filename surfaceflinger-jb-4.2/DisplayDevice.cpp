@@ -83,7 +83,7 @@ DisplayDevice::DisplayDevice(
       mDisplay(EGL_NO_DISPLAY),
       mSurface(EGL_NO_SURFACE),
       mContext(EGL_NO_CONTEXT),
-      mDisplayWidth(), mDisplayHeight(), mFormat(),
+      mDisplayWidth(), mDisplayHeight(), mFormat(), // 初始化列表还可以不放数据
       mFlags(),
       mPageFlipCount(),
       mIsSecure(isSecure),
@@ -138,6 +138,12 @@ void DisplayDevice::init(EGLConfig config)
     EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     surface = eglCreateWindowSurface(display, config, window, NULL); // 这里会干嘛？ 通过EGL创建一个供绘制的Window，
 																	  // 理论上EGL处理完的数据也会压入到这个ANativeWindow所关联的BufferQueue
+																	  // 也就是创建DisplayDevice用到的FrameBufferSurface
+																	  // 另外一路，在Layer创建的BufferQueue(SurfaceTextureLayer)，
+																	  // SurfaceTexture(ConsumerBase)收到数据后会去触发VSYNC事件
+																	  // 或者通常的情况是VSYNC事件一直在自动触发(硬件或者软件)
+																	  // 目前等待求证的就是Layer可能有多个，EGL是否是先把Layer收到的数据合并
+																	  // 之后放到FrameBufferSurface里面，也就是通过这里的ANativeWindow
     eglQuerySurface(display, surface, EGL_WIDTH,  &mDisplayWidth);
     eglQuerySurface(display, surface, EGL_HEIGHT, &mDisplayHeight);
 
@@ -169,7 +175,7 @@ void DisplayDevice::init(EGLConfig config)
     }
 
     // initialize the display orientation transform.
-    setProjection(DisplayState::eOrientationDefault, mViewport, mFrame);
+    setProjection(DisplayState::eOrientationDefault, mViewport, mFrame); // mViewport和mFrame这样赋值有什么意义？
 }
 
 void DisplayDevice::setDisplayName(const String8& displayName) {
@@ -305,7 +311,7 @@ bool DisplayDevice::getSecureLayerVisible() const {
 Region DisplayDevice::getDirtyRegion(bool repaintEverything) const {
     Region dirty;
     if (repaintEverything) {
-        dirty.set(getBounds());
+        dirty.set(getBounds()); // getBounds()是整个屏幕大小
     } else {
         const Transform& planeTransform(mGlobalTransform);
         dirty = planeTransform.transform(this->dirtyRegion);
@@ -336,7 +342,7 @@ bool DisplayDevice::isScreenAcquired() const {
 
 void DisplayDevice::setLayerStack(uint32_t stack) {
     mLayerStack = stack;
-    dirtyRegion.set(bounds());
+    dirtyRegion.set(bounds()); // 每设置一次Layer Stack，dirtyRegion就会重置为屏幕大小
 }
 
 // ----------------------------------------------------------------------------

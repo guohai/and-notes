@@ -76,8 +76,8 @@ public:
             };
 
             struct State {
-                Geometry        active;
-                Geometry        requested;
+                Geometry        active; // 包含 w/h/crop
+                Geometry        requested; //
                 uint32_t        z;
                 uint32_t        layerStack;
                 uint8_t         alpha;

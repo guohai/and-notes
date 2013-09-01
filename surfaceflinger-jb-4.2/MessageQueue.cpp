@@ -65,11 +65,11 @@ void MessageQueue::Handler::handleMessage(const Message& message) {
     switch (message.what) {
         case INVALIDATE:
             android_atomic_and(~eventMaskInvalidate, &mEventMask);
-            mQueue.mFlinger->onMessageReceived(message.what);
+            mQueue.mFlinger->onMessageReceived(message.what); //
             break;
         case REFRESH:
             android_atomic_and(~eventMaskRefresh, &mEventMask);
-            mQueue.mFlinger->onMessageReceived(message.what);
+            mQueue.mFlinger->onMessageReceived(message.what); //
             break;
     }
 }
@@ -90,13 +90,13 @@ void MessageQueue::init(const sp<SurfaceFlinger>& flinger)
     mHandler = new Handler(*this);
 }
 
-void MessageQueue::setEventThread(const sp<EventThread>& eventThread)
+void MessageQueue::setEventThread(const sp<EventThread>& eventThread) // 只有在SurfaceFlinger当中调用一次
 {
     mEventThread = eventThread;
     mEvents = eventThread->createEventConnection(); // 这里 IDisplayEventConnection
-    mEventTube = mEvents->getDataChannel();
+    mEventTube = mEvents->getDataChannel(); // BitTube实在EventThread创建的
     mLooper->addFd(mEventTube->getFd(), 0, ALOOPER_EVENT_INPUT,
-            MessageQueue::cb_eventReceiver, this);
+            MessageQueue::cb_eventReceiver, this); // 这个FD是干什么的？ mReceiveFd，听这个FD上的事件
 }
 
 void MessageQueue::waitMessage() {
@@ -159,7 +159,7 @@ void MessageQueue::refresh() {
 #endif
 }
 
-int MessageQueue::cb_eventReceiver(int fd, int events, void* data) {
+int MessageQueue::cb_eventReceiver(int fd, int events, void* data) { // BitTube的socket回调
     MessageQueue* queue = reinterpret_cast<MessageQueue *>(data);
     return queue->eventReceiver(fd, events);
 }
@@ -168,12 +168,12 @@ int MessageQueue::eventReceiver(int fd, int events) {
     ssize_t n;
     DisplayEventReceiver::Event buffer[8];
     while ((n = DisplayEventReceiver::getEvents(mEventTube, buffer, 8)) > 0) {
-        for (int i=0 ; i<n ; i++) {
-            if (buffer[i].header.type == DisplayEventReceiver::DISPLAY_EVENT_VSYNC) {
+        for (int i = 0 ; i < n ; i++) {
+            if (buffer[i].header.type == DisplayEventReceiver::DISPLAY_EVENT_VSYNC) { // 如果是VSYNC事件
 #if INVALIDATE_ON_VSYNC
-                mHandler->dispatchInvalidate();
+                mHandler->dispatchInvalidate(); // Handler(MessageHandler)
 #else
-                mHandler->dispatchRefresh();
+                mHandler->dispatchRefresh(); // Handler(MessageHandler)
 #endif
                 break;
             }

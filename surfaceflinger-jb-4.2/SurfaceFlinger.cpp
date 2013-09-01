@@ -194,11 +194,11 @@ sp<IBinder> SurfaceFlinger::createDisplay(const String8& displayName,
 void SurfaceFlinger::createBuiltinDisplayLocked(DisplayDevice::DisplayType type) {
     ALOGW_IF(mBuiltinDisplays[type],
             "Overwriting display token for display type %d", type);
-    mBuiltinDisplays[type] = new BBinder();
-    DisplayDeviceState info(type);
+    mBuiltinDisplays[type] = new BBinder(); // sp
+    DisplayDeviceState info(type); // built in device
     // All non-virtual displays are currently considered secure.
     info.isSecure = true;
-    mCurrentState.displays.add(mBuiltinDisplays[type], info); // 默认的display
+    mCurrentState.displays.add(mBuiltinDisplays[type], info); // 默认的display // DefaultKeyedVector // wp
 }
 
 sp<IBinder> SurfaceFlinger::getBuiltInDisplay(int32_t id) {
@@ -467,7 +467,7 @@ void SurfaceFlinger::initializeGL(EGLDisplay display) {
     ALOGI("GL_MAX_VIEWPORT_DIMS = %d x %d", mMaxViewportDims[0], mMaxViewportDims[1]);
 }
 
-status_t SurfaceFlinger::readyToRun()
+status_t SurfaceFlinger::readyToRun() // do one-time initializations
 {
     ALOGI(  "SurfaceFlinger's main thread ready to run. "
             "Initializing graphics H/W...");
@@ -492,11 +492,13 @@ status_t SurfaceFlinger::readyToRun()
             "couldn't create EGLContext");
 
     // initialize our non-virtual displays // so far may or may not be has 2 in total
-    for (size_t i=0 ; i<DisplayDevice::NUM_DISPLAY_TYPES ; i++) {
+    for (size_t i = 0; i < DisplayDevice::NUM_DISPLAY_TYPES; i++) {
         DisplayDevice::DisplayType type((DisplayDevice::DisplayType)i);
+        // 如果我都不插入显示器，会到这里吗？
         // set-up the displays that are already connected
-        if (mHwc->isConnected(i) || type==DisplayDevice::DISPLAY_PRIMARY) { // 默认 primary display 总是连上的
-        																	// 通常这里只会一个 primary display 
+        if (mHwc->isConnected(i) || type == DisplayDevice::DISPLAY_PRIMARY) { // 默认 primary display 总是连上的
+        																	  // 通常这里只会一个 primary display
+																			  // 即使不接入显示器，也是会执行这里
             // All non-virtual displays are currently considered secure.
             bool isSecure = true;
             createBuiltinDisplayLocked(type);
@@ -506,7 +508,10 @@ status_t SurfaceFlinger::readyToRun()
             sp<SurfaceTextureClient> stc = new SurfaceTextureClient(
                         static_cast< sp<ISurfaceTexture> >(fbs->getBufferQueue())); // ANativeWindow
             sp<DisplayDevice> hw = new DisplayDevice(this,
-                    type, isSecure, token, stc, fbs, mEGLConfig); // 可是是谁把数据喂给DisplayDevice的呢？
+                    type, isSecure, token, stc /* mNativeWindow */, fbs /* mFramebufferSurface */, mEGLConfig);
+            // 可是是谁喂数据到这个BufferQueue里来的呢？
+            // 可是是谁把数据喂给DisplayDevice的呢？
+            // 难道是EGL？eglCreateWindowSurface
             if (i > DisplayDevice::DISPLAY_PRIMARY) {
                 // FIXME: currently we don't get blank/unblank requests
                 // for displays other than the main display, so we always
@@ -742,7 +747,7 @@ void SurfaceFlinger::onVSyncReceived(int type, nsecs_t timestamp) { // 实现了
     }
 }
 
-void SurfaceFlinger::onHotplugReceived(int type, bool connected) {
+void SurfaceFlinger::onHotplugReceived(int type, bool connected) { // 如果没有显示器，接入进来一个，不会触发，因为主显示器始终是连上的
     if (mEventThread == NULL) {
         // This is a temporary workaround for b/7145521.  A non-null pointer
         // does not mean EventThread has finished initializing, so this
@@ -891,7 +896,7 @@ void SurfaceFlinger::rebuildLayerStacks() {
         invalidateHwcGeometry();
 
         const LayerVector& currentLayers(mDrawingState.layersSortedByZ);
-        for (size_t dpy=0 ; dpy<mDisplays.size() ; dpy++) {
+        for (size_t dpy = 0 ; dpy < mDisplays.size() ; dpy++) {
             Region opaqueRegion;
             Region dirtyRegion;
             Vector< sp<LayerBase> > layersSortedByZ;
@@ -1076,13 +1081,13 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
      */
 
     if (transactionFlags & eTraversalNeeded) {
-        for (size_t i=0 ; i<count ; i++) {
+        for (size_t i = 0 ; i < count ; i++) { // 每层都需要traversal
             const sp<LayerBase>& layer(currentLayers[i]);
             uint32_t trFlags = layer->getTransactionFlags(eTransactionNeeded);
-            if (!trFlags) continue;
+            if (!trFlags) continue; // 不需要transaction
 
-            const uint32_t flags = layer->doTransaction(0);
-            if (flags & Layer::eVisibleRegion)
+            const uint32_t flags = layer->doTransaction(0); // 更新state，并commit transaction
+            if (flags & Layer::eVisibleRegion) // need to invalidate and recompute the visible regions
                 mVisibleRegionsDirty = true;
         }
     }
@@ -1106,7 +1111,7 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
             // (ie: in drawing state but not in current state)
             // also handle displays that changed
             // (ie: displays that are in both lists)
-            for (size_t i=0 ; i<dc ; i++) {
+            for (size_t i = 0 ; i < dc ; i++) {
                 const ssize_t j = curr.indexOfKey(draw.keyAt(i));
                 if (j < 0) {
                     // in drawing state but not in current state
@@ -1156,7 +1161,7 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
 
             // find displays that were added
             // (ie: in current state but not in drawing state)
-            for (size_t i=0 ; i<cc ; i++) {
+            for (size_t i = 0 ; i < cc ; i++) {
                 if (draw.indexOfKey(curr.keyAt(i)) < 0) {
                     const DisplayDeviceState& state(curr[i]);
 
@@ -1456,7 +1461,7 @@ void SurfaceFlinger::computeVisibleRegions(
 
 void SurfaceFlinger::invalidateLayerStack(uint32_t layerStack,
         const Region& dirty) {
-    for (size_t dpy=0 ; dpy<mDisplays.size() ; dpy++) {
+    for (size_t dpy = 0; dpy < mDisplays.size() ; dpy++) { // 假设只有一个显示器
         const sp<DisplayDevice>& hw(mDisplays[dpy]);
         if (hw->getLayerStack() == layerStack) {
             hw->dirtyRegion.orSelf(dirty);
@@ -1471,11 +1476,11 @@ void SurfaceFlinger::handlePageFlip()
     bool visibleRegions = false;
     const LayerVector& currentLayers(mDrawingState.layersSortedByZ);
     const size_t count = currentLayers.size();
-    for (size_t i=0 ; i<count ; i++) {
+    for (size_t i = 0; i < count; i++) {
         const sp<LayerBase>& layer(currentLayers[i]);
         const Region dirty(layer->latchBuffer(visibleRegions));
         const Layer::State& s(layer->drawingState());
-        invalidateLayerStack(s.layerStack, dirty);
+        invalidateLayerStack(s.layerStack, dirty); // layer stack和display device一样的时候就会合并dirty region
     }
 
     mVisibleRegionsDirty |= visibleRegions;
@@ -1668,7 +1673,7 @@ ssize_t SurfaceFlinger::addClientLayer(const sp<Client>& client,
 
     // add this layer to the current state list
     Mutex::Autolock _l(mStateLock);
-    mCurrentState.layersSortedByZ.add(lbc);
+    mCurrentState.layersSortedByZ.add(lbc); // LayerVector
 
     return ssize_t(name);
 }
@@ -1712,7 +1717,7 @@ status_t SurfaceFlinger::purgatorizeLayer_l(const sp<LayerBase>& layerBase)
 
 uint32_t SurfaceFlinger::peekTransactionFlags(uint32_t flags)
 {
-    return android_atomic_release_load(&mTransactionFlags);
+    return android_atomic_release_load(&mTransactionFlags); // 这是什么？
 }
 
 uint32_t SurfaceFlinger::getTransactionFlags(uint32_t flags)
@@ -1734,6 +1739,10 @@ void SurfaceFlinger::setTransactionState(
         const Vector<DisplayState>& displays,
         uint32_t flags)
 {
+
+	// 这个方法基本只有从ISurfaceComposer调用过来才会做事情
+	// 客户端会修改Surface的状态，然后会通过setTransactionState调用过来
+
     ATRACE_CALL();
     Mutex::Autolock _l(mStateLock);
     uint32_t transactionFlags = 0;
@@ -1755,13 +1764,13 @@ void SurfaceFlinger::setTransactionState(
     }
 
     size_t count = displays.size();
-    for (size_t i=0 ; i<count ; i++) {
+    for (size_t i = 0 ; i < count ; i++) {
         const DisplayState& s(displays[i]);
         transactionFlags |= setDisplayStateLocked(s);
     }
 
     count = state.size();
-    for (size_t i=0 ; i<count ; i++) {
+    for (size_t i = 0 ; i < count ; i++) {
         const ComposerState& s(state[i]);
         // Here we need to check that the interface we're given is indeed
         // one of our own. A malicious client could give us a NULL
@@ -1852,7 +1861,7 @@ uint32_t SurfaceFlinger::setClientStateLocked(
         const layer_state_t& s)
 {
     uint32_t flags = 0;
-    sp<LayerBaseClient> layer(client->getLayerUser(s.surface));
+    sp<LayerBaseClient> layer(client->getLayerUser(s.surface)); // layer_state_t，这里的surface实际就是SurfaceID
     if (layer != 0) {
         const uint32_t what = s.what;
         if (what & layer_state_t::ePositionChanged) {
@@ -1943,7 +1952,7 @@ sp<ISurface> SurfaceFlinger::createLayer(
     if (layer != 0) {
         layer->initStates(w, h, flags);
         layer->setName(name);
-        ssize_t token = addClientLayer(client, layer);
+        ssize_t token = addClientLayer(client, layer); // 添加到LayerVector mCurrentState.layersSortedByZ
         surfaceHandle = layer->getSurface();
         if (surfaceHandle != 0) {
             params->token = token;
@@ -2055,7 +2064,7 @@ status_t SurfaceFlinger::onLayerDestroyed(const wp<LayerBaseClient>& layer)
 
 void SurfaceFlinger::onInitializeDisplays() {
     // reset screen orientation
-    Vector<ComposerState> state;
+    Vector<ComposerState> state; // 这个是空的丫
     Vector<DisplayState> displays;
     DisplayState d;
     d.what = DisplayState::eDisplayProjectionChanged;
@@ -2064,7 +2073,7 @@ void SurfaceFlinger::onInitializeDisplays() {
     d.frame.makeInvalid();
     d.viewport.makeInvalid();
     displays.add(d);
-    setTransactionState(state, displays, 0);
+    setTransactionState(state, displays, 0); // 初始化的调用实际不做什么
     onScreenAcquired(getDefaultDisplayDevice());
 }
 
@@ -2790,7 +2799,7 @@ status_t SurfaceFlinger::captureScreen(const sp<IBinder>& display,
         sp<IMemoryHeap>* heap,
         uint32_t* width, uint32_t* height, PixelFormat* format,
         uint32_t sw, uint32_t sh,
-        uint32_t minLayerZ, uint32_t maxLayerZ)
+        uint32_t minLayerZ, uint32_t maxLayerZ) // 看这里
 {
     if (CC_UNLIKELY(display == 0))
         return BAD_VALUE;
@@ -2877,7 +2886,7 @@ SurfaceFlinger::DisplayDeviceState::DisplayDeviceState()
 }
 
 SurfaceFlinger::DisplayDeviceState::DisplayDeviceState(DisplayDevice::DisplayType type)
-    : type(type), layerStack(0), orientation(0) {
+    : type(type), layerStack(0), orientation(0) { // 根据DisplayType构建一个DisplayDeviceState
     viewport.makeInvalid();
     frame.makeInvalid();
 }

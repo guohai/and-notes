@@ -285,7 +285,7 @@ void HWComposer::invalidate() { // 重新绘制
 
 void HWComposer::vsync(int disp, int64_t timestamp) { // VSYNC 事件
     ATRACE_INT("VSYNC", ++mVSyncCount&1);
-    mEventHandler.onVSyncReceived(disp, timestamp);
+    mEventHandler.onVSyncReceived(disp, timestamp); // 硬件
     Mutex::Autolock _l(mLock);
     mLastHwVSync = timestamp;
 }
@@ -1030,7 +1030,7 @@ bool HWComposer::VSyncThread::threadLoop() {
     } while (err<0 && errno == EINTR);
 
     if (err == 0) {
-        mHwc.mEventHandler.onVSyncReceived(0, next_vsync);
+        mHwc.mEventHandler.onVSyncReceived(0, next_vsync); // 软件
     }
 
     return true;

@@ -81,10 +81,10 @@ class MessageQueue {
     sp<EventThread> mEventThread;
     sp<IDisplayEventConnection> mEvents;
     sp<BitTube> mEventTube;
-    sp<Handler> mHandler;
+    sp<Handler> mHandler; // MessageHandler
 
 
-    static int cb_eventReceiver(int fd, int events, void* data);
+    static int cb_eventReceiver(int fd, int events, void* data); // 供ALooper使用
     int eventReceiver(int fd, int events);
 
 public:

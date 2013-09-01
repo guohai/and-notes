@@ -107,6 +107,7 @@ status_t FramebufferSurface::nextBuffer(sp<GraphicBuffer>& outBuffer, sp<Fence>&
 }
 
 // Overrides ConsumerBase::onFrameAvailable(), does not call base class impl.
+// 直接重写ConsumerBase的方法，这样就不用设置listener也能收到BufferQueue来的数据
 void FramebufferSurface::onFrameAvailable() { // 每过来一帧，直接往荧幕上贴
     sp<GraphicBuffer> buf;
     sp<Fence> acquireFence;

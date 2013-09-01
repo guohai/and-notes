@@ -401,7 +401,7 @@ private:
 
     // access must be protected by mStateLock
     mutable Mutex mStateLock;
-    State mCurrentState;
+    State mCurrentState; // 包含Layer(s)和Display(s)的一个普通结构，似乎没有对应关系
     volatile int32_t mTransactionFlags;
     Condition mTransactionCV;
     SortedVector<sp<LayerBase> > mLayerPurgatory;
@@ -425,7 +425,7 @@ private:
     EGLContext mEGLContext;
     EGLConfig mEGLConfig;
     EGLDisplay mEGLDisplay;
-    sp<IBinder> mBuiltinDisplays[DisplayDevice::NUM_DISPLAY_TYPES];
+    sp<IBinder> mBuiltinDisplays[DisplayDevice::NUM_DISPLAY_TYPES]; // 这个只是主键 only key
 
     // Can only accessed from the main thread, these members
     // don't need synchronization
@@ -435,7 +435,7 @@ private:
 
     // this may only be written from the main thread with mStateLock held
     // it may be read from other threads with mStateLock held
-    DefaultKeyedVector< wp<IBinder>, sp<DisplayDevice> > mDisplays;
+    DefaultKeyedVector< wp<IBinder>, sp<DisplayDevice> > mDisplays; // key-value paired
 
     // don't use a lock for these, we don't care
     int mDebugRegion;

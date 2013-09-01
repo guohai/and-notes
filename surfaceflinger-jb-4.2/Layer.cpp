@@ -95,25 +95,26 @@ void Layer::onFirstRef()
     };
 
     // Creates a custom BufferQueue for SurfaceTexture to use
-    sp<BufferQueue> bq = new SurfaceTextureLayer(); // 谁来往里面填数据？
+    sp<BufferQueue> bq = new SurfaceTextureLayer(); // 谁来往里面填数据？ 传出去的ANativeWindow  通过BSurface->getSurfaceTexture
 
     /**
 	 * SurfaceTexture(GLuint tex, bool allowSynchronousMode = true,
      *         GLenum texTarget = GL_TEXTURE_EXTERNAL_OES, bool useFenceSync = true,
      *         const sp<BufferQueue> &bufferQueue = 0);
 	 */
-    mSurfaceTexture = new SurfaceTexture(mTextureName, true,
+    mSurfaceTexture = new SurfaceTexture(mTextureName, true, // SurfaceTexture(ConsumerBase)
             GL_TEXTURE_EXTERNAL_OES, false, bq);
 
     mSurfaceTexture->setConsumerUsageBits(getEffectiveUsage(0));
-    mSurfaceTexture->setFrameAvailableListener(new FrameQueuedListener(this));
+    mSurfaceTexture->setFrameAvailableListener(new FrameQueuedListener(this)); // 只有这里创建的SurfaceTexture才会有Callback回来
+    																		    // HW创建的跟这里没有关系
     mSurfaceTexture->setSynchronousMode(true);
 
 #ifdef TARGET_DISABLE_TRIPLE_BUFFERING
 #warning "disabling triple buffering"
     mSurfaceTexture->setDefaultMaxBufferCount(2);
 #else
-    mSurfaceTexture->setDefaultMaxBufferCount(3);
+    mSurfaceTexture->setDefaultMaxBufferCount(3); // 怎么样看出来这就是triple buffer吗？从获取buffer的地方可以？
 #endif
 
     const sp<const DisplayDevice> hw(mFlinger->getDefaultDisplayDevice());
@@ -333,16 +334,16 @@ void Layer::onDraw(const sp<const DisplayDevice>& hw, const Region& clip) const
         const SurfaceFlinger::LayerVector& drawingLayers(
                 mFlinger->mDrawingState.layersSortedByZ);
         const size_t count = drawingLayers.size();
-        for (size_t i=0 ; i<count ; ++i) {
+        for (size_t i = 0; i < count; ++i) {
             const sp<LayerBase>& layer(drawingLayers[i]);
             if (layer.get() == static_cast<LayerBase const*>(this))
-                break;
-            under.orSelf( hw->getTransform().transform(layer->visibleRegion) );
+                break; // 如果是自己，直接跳出
+            under.orSelf(hw->getTransform().transform(layer->visibleRegion));
         }
-        // if not everything below us is covered, we plug the holes!
+        // if not everything below us is covered, we plug the holes! // 塞住
         Region holes(clip.subtract(under));
-        if (!holes.isEmpty()) {
-            clearWithOpenGL(hw, holes, 0, 0, 0, 1);
+        if (!holes.isEmpty()) { // 表示什么意思？
+            clearWithOpenGL(hw, holes, 0, 0, 0, 1); // black并且不透名
         }
         return;
     }
@@ -406,7 +407,7 @@ bool Layer::getOpacityForFormat(uint32_t format)
         return true;
     }
     PixelFormatInfo info;
-    status_t err = getPixelFormatInfo(PixelFormat(format), &info);
+    status_t err = getPixelFormatInfo(PixelFormat(format), &info); // 这个方法是哪里来的？
     // in case of error (unknown format), we assume no blending
     return (err || info.h_alpha <= info.l_alpha);
 }
@@ -483,7 +484,7 @@ uint32_t Layer::doTransaction(uint32_t flags)
         // record the new size, form this point on, when the client request
         // a buffer, it'll get the new size.
         mSurfaceTexture->setDefaultBufferSize(
-                temp.requested.w, temp.requested.h);
+                temp.requested.w, temp.requested.h); // 重新设置buffer大小
     }
 
     if (!isFixedSize()) {
@@ -559,10 +560,10 @@ Region Layer::latchBuffer(bool& recomputeVisibleRegions)
 
         // Capture the old state of the layer for comparisons later
         const bool oldOpacity = isOpaque();
-        sp<GraphicBuffer> oldActiveBuffer = mActiveBuffer;
+        sp<GraphicBuffer> oldActiveBuffer = mActiveBuffer; // 如果oldActiveBuffer为NULL，就表示这是收到的第一个frame
 
         // signal another event if we have more frames pending
-        if (android_atomic_dec(&mQueuedFrames) > 1) {
+        if (android_atomic_dec(&mQueuedFrames) > 1) { // 这个好
             mFlinger->signalLayerUpdate();
         }
 
@@ -587,13 +588,13 @@ Region Layer::latchBuffer(bool& recomputeVisibleRegions)
 
                 // check that we received a buffer of the right size
                 // (Take the buffer's orientation into account)
-                if (item.mTransform & Transform::ROT_90) {
+                if (item.mTransform & Transform::ROT_90) { // why?
                     swap(bufWidth, bufHeight);
                 }
 
 
                 bool isFixedSize = item.mScalingMode != NATIVE_WINDOW_SCALING_MODE_FREEZE;
-                if (front.active != front.requested) {
+                if (front.active != front.requested) { // 也就是外面就已经确定了？
 
                     if (isFixedSize ||
                             (bufWidth == front.requested.w &&
@@ -649,7 +650,7 @@ Region Layer::latchBuffer(bool& recomputeVisibleRegions)
         };
 
 
-        Reject r(mDrawingState, currentState(), recomputeVisibleRegions);
+        Reject r(mDrawingState, currentState(), recomputeVisibleRegions); // latchBuffer 参数
 
         if (mSurfaceTexture->updateTexImage(&r, true) < NO_ERROR) {
             // something happened!
@@ -658,7 +659,7 @@ Region Layer::latchBuffer(bool& recomputeVisibleRegions)
         }
 
         // update the active buffer
-        mActiveBuffer = mSurfaceTexture->getCurrentBuffer();
+        mActiveBuffer = mSurfaceTexture->getCurrentBuffer(); // current buffer updated after updateTexImage called
         if (mActiveBuffer == NULL) {
             // this can only happen if the very first buffer was rejected.
             return outDirtyRegion;

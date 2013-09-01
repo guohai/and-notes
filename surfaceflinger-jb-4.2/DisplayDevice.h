@@ -198,7 +198,7 @@ private:
 
     void updateGeometryTransform();
 
-    uint32_t mLayerStack;
+    uint32_t mLayerStack; // 什么概念
     int mOrientation;
     Rect mViewport;
     Rect mFrame;
